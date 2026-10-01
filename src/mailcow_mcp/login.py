@@ -135,7 +135,13 @@ class LoginPages:
         return HTMLResponse(
             html,
             status_code=status_code,
-            headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"},
+            headers={
+                "Content-Security-Policy": csp,
+                "Cache-Control": "no-store",
+                # Our own form posts carry our Origin; other sites never see the URL
+                # (it contains the sign-in request id).
+                "Referrer-Policy": "same-origin",
+            },
         )
 
     def _message(self, t: Translator, title: str, body: str, status_code: int) -> HTMLResponse:
@@ -192,7 +198,9 @@ class LoginPages:
 
     async def _post(self, request: Request, t: Translator, ip: str) -> Response:
         origin = request.headers.get("origin")
-        if origin is not None and origin != self.public_origin:
+        # "null" is what browsers send under a no-referrer policy; the CSRF token is the
+        # real protection, this only refuses posts from another site.
+        if origin not in (None, "null") and origin != self.public_origin:
             return PlainTextResponse("cross-origin request refused", status_code=403)
         form = await request.form()
 

@@ -7,6 +7,15 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-02
+
+### Fixed
+
+- Signing in failed in browsers with "cross-origin request refused": under the sign-in page's
+  `no-referrer` policy, browsers send `Origin: null` with the form. The page now uses
+  `Referrer-Policy: same-origin` (no referrer to other sites), and `Origin: null` is accepted; the
+  CSRF token is the protection, only posts from another site are refused.
+
 ### Changed
 
 - `setup-mailcow.sh` checks every deployment step against mailcow's state and marks it ✓/✗/?:
@@ -57,5 +66,6 @@ First release.
   user guide.
 - Multi-arch image (linux/amd64, linux/arm64) on GHCR with SBOM and provenance.
 
-[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/nitramxx/mailcow-mcp/releases/tag/v0.1.0

@@ -231,7 +231,7 @@ class TestLoginPage:
         assert "script-src" not in csp
         assert page.headers["x-frame-options"] == "DENY"
         assert page.headers["x-content-type-options"] == "nosniff"
-        assert page.headers["referrer-policy"] == "no-referrer"
+        assert page.headers["referrer-policy"] == "same-origin"
         assert page.headers["cache-control"] == "no-store"
         assert "<script" not in page.text
         # no third-party assets: every src/href is a local path
@@ -319,6 +319,26 @@ class TestSignIn:
         )
         assert response.status_code == 403
         assert harness.verifier.calls == []
+
+    @pytest.mark.parametrize("origin", [BASE_URL, "null"])
+    def test_browser_origins_are_accepted(self, harness: Harness, origin: str) -> None:
+        # Browsers send our origin, or "null" under a no-referrer policy.
+        client_id = harness.register()["client_id"]
+        _, challenge = pkce_pair()
+        request_id, csrf = harness.open_login(harness.authorize(client_id, challenge))
+        response = harness.client.post(
+            "/login",
+            data={
+                "request": request_id,
+                "csrf": csrf,
+                "action": "login",
+                "email": EMAIL,
+                "password": PASSWORD,
+            },
+            headers={"Origin": origin},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
 
     def test_cancel(self, harness: Harness) -> None:
         client_id = harness.register()["client_id"]

@@ -32,6 +32,10 @@ README.
 
 ## Version notes
 
+### 0.1.1
+
+Fixes sign-in in browsers. Nothing to change: `docker compose pull && docker compose up -d`.
+
 ### 0.1.0
 
 First release; nothing to migrate.
