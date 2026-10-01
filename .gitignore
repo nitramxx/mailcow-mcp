@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and data — never commit secrets
+.env
+*.env
+!.env.example
+data/
+*.sqlite3
+*.db
+
+# Local scratch files
+user.txt
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

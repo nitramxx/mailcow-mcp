@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check --output-format=github .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest
+      # Integration tests (Dovecot + Postfix test containers, mocked mailcow API/OAuth)
+      # and OAuth flow tests are added with phases 1–6.
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: mailcow-mcp:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          key=$(docker run --rm mailcow-mcp:ci generate-key)
+          test ${#key} -eq 44
+
+          # Missing configuration: exit 2 with a list of problems, no start.
+          set +e
+          docker run --rm mailcow-mcp:ci serve 2> err.txt
+          code=$?
+          set -e
+          cat err.txt
+          test "$code" -eq 2
+          grep -q "PUBLIC_URL: required" err.txt
+
+          # Valid configuration, hardened like production: healthy within 30 s.
+          docker run -d --name app --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges -v mcp-data:/data \
+            -e MODE=generic -e PUBLIC_URL=https://mcp.example.org \
+            -e ENC_KEY="$key" -e TRUSTED_PROXIES=127.0.0.1 \
+            mailcow-mcp:ci
+          for _ in $(seq 30); do
+            if docker exec app mailcow-mcp healthcheck; then
+              test "$(docker exec app id -u)" = 10001
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs app
+          exit 1
