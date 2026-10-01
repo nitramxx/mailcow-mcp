@@ -11,6 +11,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Python upgrades are deliberate: they also change requires-python and the lock file.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
