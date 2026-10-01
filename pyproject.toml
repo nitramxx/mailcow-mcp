@@ -58,7 +58,7 @@ known-first-party = ["mailcow_mcp"]
 known-local-folder = ["conftest", "mailserver_fixture"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "S603", "S607"]
+"tests/**" = ["S101", "S105", "S106", "S603", "S607", "S608"]
 
 [tool.mypy]
 strict = true

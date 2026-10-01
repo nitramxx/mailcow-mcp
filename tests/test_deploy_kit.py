@@ -275,3 +275,134 @@ def test_containers_are_healthy_and_isolated(applied: FakeMailcow, nginx: str) -
     ).stdout
     assert inspect.split()[0] == "true" and inspect.split()[1] == "10001:10001" and "ALL" in inspect
     run("docker", "compose", "down", cwd=applied.kit, env=env)
+
+
+FAKE_MAILCOW_COMPOSE = """
+services:
+  mysql-mailcow:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: mailcow
+      MARIADB_USER: mailcow
+      MARIADB_PASSWORD: dbpass
+  redis-mailcow:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "redispass"]
+"""
+
+
+def test_setup_checks_mailcow_state(tmp_path: Path, image: str) -> None:
+    """Steps 2-5 are read from mailcow (certificate, database, Redis); credentials filled in."""
+    project = f"kitdb{uuid.uuid4().hex[:6]}"
+    subnet = f"172.30.{200 + int(uuid.uuid4().hex[:2], 16) % 50}"
+    directory = tmp_path / "mailcow-dockerized"
+    (directory / "data" / "conf" / "nginx").mkdir(parents=True)
+    ssl_dir = directory / "data" / "assets" / "ssl"
+    ssl_dir.mkdir(parents=True)
+    run(
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "30",
+        "-subj",
+        "/CN=mail.test",
+        "-addext",
+        "subjectAltName=DNS:mail.test,DNS:mcp.test",
+        "-keyout",
+        str(ssl_dir / "key.pem"),
+        "-out",
+        str(ssl_dir / "cert.pem"),
+    )
+    (directory / "mailcow.conf").write_text(
+        f"MAILCOW_HOSTNAME=mail.test\nCOMPOSE_PROJECT_NAME={project}\nIPV4_NETWORK={subnet}\n"
+        "HTTPS_PORT=443\nENABLE_IPV6=false\nADDITIONAL_SAN=mcp.test\n"
+        "DBNAME=mailcow\nDBUSER=mailcow\nDBPASS=dbpass\nREDISPASS=redispass\n"
+    )
+    (directory / "docker-compose.yml").write_text(FAKE_MAILCOW_COMPOSE)
+    (directory / ".env").symlink_to("mailcow.conf")  # as in mailcow-dockerized
+    kit = tmp_path / "mailcow-mcp"
+    kit.mkdir()
+    for name in ("docker-compose.yml", "mailcow-mcp.conf.template", "setup-mailcow.sh"):
+        shutil.copy2(KIT / name, kit / name)
+    network = f"{project}_mailcow-network"
+    compose = dict(os.environ)  # the project name comes from .env → mailcow.conf, as in mailcow
+    run("docker", "network", "create", "--subnet", f"{subnet}.0/24", network)
+    try:
+        run("docker", "compose", "up", "-d", "--wait", cwd=directory, env=compose)
+        seed = (
+            "CREATE TABLE oauth_clients (id INT AUTO_INCREMENT PRIMARY KEY, client_id VARCHAR(80), "
+            "client_secret VARCHAR(80), redirect_uri VARCHAR(2000), grant_types VARCHAR(80), scope VARCHAR(4000), "
+            "user_id VARCHAR(80));"
+            "INSERT INTO oauth_clients (client_id, client_secret, redirect_uri) VALUES "
+            "('other0000000', 'x', 'https://cloud.test/apps/oauth'), "
+            "('abcdef123456', 'secret0123456789abcdef01', 'https://mcp.test/oauth/mailcow/callback');"
+            "CREATE TABLE api (api_key VARCHAR(255) PRIMARY KEY, allow_from VARCHAR(512), skip_ip_check TINYINT(1), "
+            "access ENUM('ro','rw'), active TINYINT(1));"
+            f"INSERT INTO api VALUES ('RO-KEY', '', 0, 'ro', 1), ('RW-KEY-FROM-DB', '10.0.0.5\\n{subnet}.0/24', 0, 'rw', 1);"
+        )
+        for _ in range(30):
+            done = run(
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "-e",
+                "MYSQL_PWD=dbpass",
+                "mysql-mailcow",
+                "mariadb",
+                "-umailcow",
+                "mailcow",
+                "-e",
+                seed,
+                cwd=directory,
+                env=compose,
+                check=False,
+            )
+            if done.returncode == 0:
+                break
+            time.sleep(2)
+        assert done.returncode == 0, done.stderr
+        run(
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "-e",
+            "REDISCLI_AUTH=redispass",
+            "redis-mailcow",
+            "redis-cli",
+            "HSET",
+            "F2B_WHITELIST",
+            f"{subnet}.231",
+            "1",
+            cwd=directory,
+            env=compose,
+        )
+
+        out = run(
+            "bash",
+            str(kit / "setup-mailcow.sh"),
+            "--mailcow-dir",
+            str(directory),
+            "--hostname",
+            "mcp.test",
+            "--version",
+            TAG,
+            "--apply",
+            env=compose,
+        ).stdout
+        for step in ("2", "3", "4", "5", "6"):
+            assert f"✓ {step}." in out, out
+        assert "OAuth2 Apps" not in out and "Fail2ban parameters" not in out
+        app_env = (kit / "app.env").read_text()
+        assert "MAILCOW_OAUTH_CLIENT_ID=abcdef123456" in app_env
+        assert "MAILCOW_OAUTH_CLIENT_SECRET=secret0123456789abcdef01" in app_env
+        assert "MAILCOW_API_KEY=RW-KEY-FROM-DB" in (kit / "broker.env").read_text()
+    finally:
+        run("docker", "compose", "down", "-v", cwd=directory, env=compose, check=False)
+        run("docker", "network", "rm", network, check=False)

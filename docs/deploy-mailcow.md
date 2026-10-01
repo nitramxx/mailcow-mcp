@@ -75,8 +75,13 @@ cd /opt/mailcow-mcp
 
 The helper is **read-only** unless you add `--apply`. It reads `mailcow.conf`, finds mailcow's
 Docker network, picks two free fixed addresses on it (one for the app, one for the broker), and
-prints what it would write and the exact values for the next steps. Note the two addresses; the
-example below uses `172.22.1.231` (app) and `172.22.1.232` (broker).
+**checks every step of this guide** against mailcow's actual state: DNS, the certificate file,
+the OAuth2 app and API key (in mailcow's database), the Fail2ban allowlist (in mailcow's Redis),
+and whether mailcow-mcp is running. Each step shows ✓ (done), ✗ (to do) or ? (couldn't check),
+and only the open steps are listed with exact values. Run it as often as you like: after each
+step below, run it again to confirm.
+
+Note the two addresses; the example below uses `172.22.1.231` (app) and `172.22.1.232` (broker).
 
 ## 4. OAuth2 app in mailcow
 
@@ -84,13 +89,15 @@ mailcow UI → **System → Configuration → Access → OAuth2 Apps → Add OAu
 
 - Redirect URI: `https://mcp.example.com/oauth/mailcow/callback` (exactly this)
 
-Note the client ID and secret.
+You don't need to copy the client ID and secret: the helper reads them from mailcow's database
+(or pass `--oauth-client-id` and `--oauth-client-secret`).
 
 ## 5. API key
 
 mailcow UI → **System → Configuration → Access → Administrators**, section **API**:
 
-- In **Read-Write Access**, activate the key and copy it.
+- In **Read-Write Access**, activate the key. (The helper reads the key from mailcow's database;
+  or pass `--api-key`.)
 - **Allow API access from**: add the broker's address, e.g. `172.22.1.232`.
 
 **mailcow has only one read-write API key.** If something else already uses it (backups, a
@@ -111,16 +118,24 @@ would lose access. mailcow-mcp has its own limits instead (failed sign-ins per I
 
 ```sh
 cd /opt/mailcow-mcp
-./setup-mailcow.sh --hostname mcp.example.com --mailcow-dir /opt/mailcow-dockerized \
-    --oauth-client-id <ID> --oauth-client-secret <SECRET> --api-key <API-KEY> --apply
+./setup-mailcow.sh --hostname mcp.example.com --mailcow-dir /opt/mailcow-dockerized --apply
 docker compose up -d
 docker compose ps                        # both healthy after ~20 s
 cd /opt/mailcow-dockerized && docker compose restart nginx-mailcow
 ```
 
-`--apply` writes `.env`, `app.env` and `broker.env` (mode 600, with freshly generated keys) next to
-the compose file, and the nginx site file `data/conf/nginx/mailcow-mcp.conf` into mailcow. Running
-it again never replaces existing keys.
+`--apply` writes three files **in `/opt/mailcow-mcp`, next to `docker-compose.yml`** (mode 600):
+
+- `.env`: compose settings (image version, network, the two addresses);
+- `app.env`: the app's settings, including the OAuth2 client and a fresh `ENC_KEY`;
+- `broker.env`: the broker's settings, including the API key and a fresh `BROKER_SIGNING_KEY`;
+
+and the nginx site file `data/conf/nginx/mailcow-mcp.conf` into mailcow (checked with `nginx -t`;
+if nginx rejects it, it's renamed to `.disabled` so mailcow's nginx keeps working). Running it
+again never replaces existing keys; it only fills in values that are still empty (for example the
+OAuth2 client, once you've created it).
+
+Then run `./setup-mailcow.sh --hostname mcp.example.com` once more: step 7 should show ✓.
 
 The nginx file only routes `mcp.example.com` to the app, never the broker. It resolves the app at
 request time, so **mailcow's nginx starts and keeps working when mailcow-mcp is stopped**: MCP

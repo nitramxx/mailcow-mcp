@@ -104,7 +104,117 @@ note "MCP URL:        https://$MCP_HOSTNAME/mcp"
 note "app address:    $APP_IP (mailcow network)"
 note "broker address: $BROKER_IP (mailcow network; it listens only on the internal network)"
 
-# --- secrets -------------------------------------------------------------------
+# --- reading mailcow's state (read-only) ------------------------------------------
+DBUSER="$(conf DBUSER mailcow)"; DBPASS="$(conf DBPASS)"; DBNAME="$(conf DBNAME mailcow)"
+REDISPASS="$(conf REDISPASS)"
+
+in_mailcow() {  # docker compose exec in mailcow's project; fails quietly
+    (cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" exec -T "$@") 2>/dev/null
+}
+sql() {
+    local client
+    for client in mariadb mysql; do  # newer MariaDB images only have "mariadb"
+        if in_mailcow -e MYSQL_PWD="$DBPASS" mysql-mailcow "$client" -u"$DBUSER" "$DBNAME" -N -B -e "$1"; then
+            return 0
+        fi
+    done
+    return 1
+}
+redis() {
+    if [ -n "$REDISPASS" ]; then
+        in_mailcow -e REDISCLI_AUTH="$REDISPASS" redis-mailcow redis-cli "$@"
+    else
+        in_mailcow redis-mailcow redis-cli "$@"
+    fi
+}
+ip_in() {  # ip_in IP "list of IPs/CIDRs (any separators)": is IP covered?
+    printf '%s\n' "$2" | awk -v ip="$1" '
+        function num(a,   p) { split(a, p, "."); return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4] }
+        {
+            gsub(/\\n|[ ,;\t]+/, " ")
+            n = split($0, items, " ")
+            for (i = 1; i <= n; i++) {
+                if (items[i] !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/) continue
+                split(items[i], c, "/"); bits = (c[2] == "" ? 32 : c[2]); size = 2 ^ (32 - bits)
+                if (int(num(c[1]) / size) == int(num(ip) / size)) found = 1
+            }
+        }
+        END { exit !found }'
+}
+resolve() { getent ahosts "$1" 2>/dev/null | awk '{print $1}' | sort -u || true; }
+
+STATUS=(); DETAIL=()
+check() { STATUS[$1]="$2"; DETAIL[$1]="$3"; }  # step ok|todo|unknown text
+
+# 1. DNS
+mcp_ips="$(resolve "$MCP_HOSTNAME")"
+mail_ips="$(resolve "$MAILCOW_HOSTNAME")"
+if [ -z "$mcp_ips" ]; then
+    check 1 todo "$MCP_HOSTNAME doesn't resolve yet"
+elif [ -n "$mail_ips" ] && [ -z "$(comm -23 <(echo "$mcp_ips") <(echo "$mail_ips"))" ]; then
+    check 1 ok "$MCP_HOSTNAME → $(echo "$mcp_ips" | tr '\n' ' ')(as $MAILCOW_HOSTNAME)"
+else
+    check 1 todo "$MCP_HOSTNAME → $(echo "$mcp_ips" | tr '\n' ' '), but $MAILCOW_HOSTNAME → $(echo "$mail_ips" | tr '\n' ' ')"
+fi
+
+# 2. Certificate
+CERT="$MAILCOW_DIR/data/assets/ssl/cert.pem"
+in_san=0; [[ ",${ADDITIONAL_SAN// /}," == *",$MCP_HOSTNAME,"* ]] && in_san=1
+if [ -r "$CERT" ] && command -v openssl >/dev/null; then
+    if openssl x509 -in "$CERT" -noout -text 2>/dev/null | grep -q "DNS:$MCP_HOSTNAME\b"; then
+        check 2 ok "mailcow's certificate covers $MCP_HOSTNAME (expires $(openssl x509 -in "$CERT" -noout -enddate | cut -d= -f2))"
+    elif [ "$in_san" = 1 ]; then
+        check 2 todo "in ADDITIONAL_SAN, but the certificate doesn't include it yet"
+    else
+        check 2 todo "not in ADDITIONAL_SAN"
+    fi
+else
+    check 2 unknown "can't read $CERT"
+fi
+
+# 3. OAuth2 app (and its credentials, if not given)
+REDIRECT_URI="https://$MCP_HOSTNAME/oauth/mailcow/callback"
+if oauth_row="$(sql "SELECT client_id, client_secret FROM oauth_clients WHERE CONCAT(' ', redirect_uri, ' ') LIKE '% $REDIRECT_URI %' ORDER BY id DESC LIMIT 1")"; then
+    if [ -n "$oauth_row" ]; then
+        check 3 ok "OAuth2 client $(cut -f1 <<<"$oauth_row") has the redirect URI"
+        [ -n "$OAUTH_CLIENT_ID" ] || OAUTH_CLIENT_ID="$(cut -f1 <<<"$oauth_row")"
+        [ -n "$OAUTH_CLIENT_SECRET" ] || OAUTH_CLIENT_SECRET="$(cut -f2 <<<"$oauth_row")"
+    else
+        check 3 todo "no OAuth2 client with redirect URI $REDIRECT_URI"
+    fi
+else
+    check 3 unknown "can't read mailcow's database (is mysql-mailcow running?)"
+fi
+
+# 4. API key (and the key itself, if not given)
+if api_row="$(sql "SELECT api_key, skip_ip_check, allow_from FROM api WHERE access = 'rw' AND active = 1 LIMIT 1")"; then
+    if [ -z "$api_row" ]; then
+        check 4 todo "the read-write API key isn't active"
+    else
+        allow_from="$(cut -f3- <<<"$api_row")"
+        if [ "$(cut -f2 <<<"$api_row")" = 1 ] || ip_in "$BROKER_IP" "$allow_from"; then
+            check 4 ok "read-write API key active, $BROKER_IP allowed"
+            [ -n "$API_KEY" ] || API_KEY="$(cut -f1 <<<"$api_row")"
+        else
+            check 4 todo "read-write API key active, but $BROKER_IP isn't in \"Allow API access from\""
+        fi
+    fi
+else
+    check 4 unknown "can't read mailcow's database"
+fi
+
+# 5. Fail2ban allowlist
+if allowlist="$(redis HKEYS F2B_WHITELIST)"; then
+    if ip_in "$APP_IP" "$allowlist"; then
+        check 5 ok "$APP_IP is allowlisted"
+    else
+        check 5 todo "$APP_IP isn't allowlisted"
+    fi
+else
+    check 5 unknown "can't read mailcow's Redis"
+fi
+
+# --- secrets and files ----------------------------------------------------------
 new_key() {
     if command -v openssl >/dev/null; then
         openssl rand -base64 32 | tr '+/' '-_'
@@ -128,6 +238,18 @@ write_file() {  # path mode content
         note "wrote          $path"
     else
         note "would write    $path"
+    fi
+}
+fill_empty() {  # fill_empty file KEY value: set KEY only if it's empty in an existing file
+    local file="$1" key="$2" value="$3"
+    [ -f "$file" ] && [ -n "$value" ] && grep -qE "^$key=$" "$file" || return 0
+    if [ "$APPLY" = 1 ]; then
+        local tmp; tmp="$(mktemp "$file.XXXXXX")"
+        awk -v k="$key" -v v="$value" 'BEGIN { FS = OFS = "=" } $1 == k && $2 == "" { print k "=" v; next } { print }' "$file" >"$tmp"
+        chmod 600 "$tmp"; mv "$tmp" "$file"
+        note "filled in      $key ($file)"
+    else
+        note "would fill in  $key ($file)"
     fi
 }
 
@@ -155,6 +277,8 @@ SMTP_HOST=postfix-mailcow
 TLS_SERVER_NAME=$MAILCOW_HOSTNAME
 TRUSTED_PROXIES=$IPV4_NETWORK.0/24
 ENC_KEY=$(new_key)"
+fill_empty "$KIT_DIR/app.env" MAILCOW_OAUTH_CLIENT_ID "$OAUTH_CLIENT_ID"
+fill_empty "$KIT_DIR/app.env" MAILCOW_OAUTH_CLIENT_SECRET "$OAUTH_CLIENT_SECRET"
 
 write_file "$KIT_DIR/broker.env" 600 "# mailcow-mcp broker (setup-mailcow.sh). Holds the mailcow API key.
 MAILCOW_API_URL=https://nginx-mailcow$port_suffix
@@ -162,6 +286,7 @@ TLS_SERVER_NAME=$MAILCOW_HOSTNAME
 MAILCOW_API_KEY=${API_KEY}
 BROKER_SHARED_SECRET=$SHARED_SECRET
 BROKER_SIGNING_KEY=$(new_key)"
+fill_empty "$KIT_DIR/broker.env" MAILCOW_API_KEY "$API_KEY"
 
 listen_ipv6=""
 [ "$ENABLE_IPV6" = "false" ] || listen_ipv6="    listen [::]:${HTTPS_PORT} ssl;"
@@ -171,49 +296,107 @@ SITE_FILE="$MAILCOW_DIR/data/conf/nginx/mailcow-mcp.conf"
 if [ "$APPLY" = 1 ]; then
     printf '%s\n' "$site" >"$SITE_FILE"
     note "wrote          $SITE_FILE"
+    # mailcow's nginx sees the file at once (mounted directory): make sure it's valid.
+    if nginx_test="$(in_mailcow nginx-mailcow nginx -t 2>&1)" || [ -z "$(cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" ps -q nginx-mailcow 2>/dev/null)" ]; then
+        :
+    else
+        mv "$SITE_FILE" "$SITE_FILE.disabled"
+        echo "error: nginx rejects the site file; moved it to $SITE_FILE.disabled:" >&2
+        echo "$nginx_test" >&2
+    fi
 else
     note "would write    $SITE_FILE"
 fi
 
-# --- what's left to do ---------------------------------------------------------
+# 6. Credentials in the env files
 missing_env=""
-grep -qE '^MAILCOW_OAUTH_CLIENT_ID=.+' "$KIT_DIR/app.env" 2>/dev/null || [ -n "$OAUTH_CLIENT_ID" ] \
-    || missing_env="$missing_env MAILCOW_OAUTH_CLIENT_ID/_SECRET (app.env)"
-grep -qE '^MAILCOW_API_KEY=.+' "$KIT_DIR/broker.env" 2>/dev/null || [ -n "$API_KEY" ] \
-    || missing_env="$missing_env MAILCOW_API_KEY (broker.env)"
-
-cat <<EOF
-
-Remaining steps (docs/deploy-mailcow.md explains each):
-
- 1. DNS: A/AAAA record  $MCP_HOSTNAME  →  this server.
-EOF
-if [[ ",$ADDITIONAL_SAN," == *",$MCP_HOSTNAME,"* ]]; then
-    echo " 2. Certificate: $MCP_HOSTNAME is already in ADDITIONAL_SAN."
+oauth_id_set=0; grep -qE '^MAILCOW_OAUTH_CLIENT_ID=.+' "$KIT_DIR/app.env" 2>/dev/null && oauth_id_set=1
+[ -n "$OAUTH_CLIENT_ID" ] && oauth_id_set=1
+api_key_set=0; grep -qE '^MAILCOW_API_KEY=.+' "$KIT_DIR/broker.env" 2>/dev/null && api_key_set=1
+[ -n "$API_KEY" ] && api_key_set=1
+[ "$oauth_id_set" = 1 ] || missing_env="$missing_env MAILCOW_OAUTH_CLIENT_ID/_SECRET (app.env)"
+[ "$api_key_set" = 1 ] || missing_env="$missing_env MAILCOW_API_KEY (broker.env)"
+if [ -z "$missing_env" ]; then
+    check 6 ok "OAuth2 client and API key are set"
 else
-    cat <<EOF
+    check 6 todo "missing:$missing_env"
+fi
+
+# 7. Running
+running=""
+[ -f "$KIT_DIR/.env" ] && running="$(cd "$KIT_DIR" && docker compose ps --format '{{.Service}}={{.Health}}' 2>/dev/null || true)"
+if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$running"; then
+    if curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" >/dev/null 2>&1; then
+        check 7 ok "app and broker healthy; https://$MCP_HOSTNAME/healthz answers through mailcow's nginx"
+    else
+        check 7 todo "app and broker healthy, but mailcow's nginx doesn't route $MCP_HOSTNAME yet"
+    fi
+elif [ -n "$running" ]; then
+    check 7 todo "containers: $(echo "$running" | tr '\n' ' ')"
+else
+    check 7 todo "not started"
+fi
+
+# --- report ---------------------------------------------------------------------
+echo
+echo "checks"
+for step in 1 2 3 4 5 6 7; do
+    case "${STATUS[$step]}" in
+        ok) mark="✓" ;; todo) mark="✗" ;; *) mark="?" ;;
+    esac
+    printf '  %s %s. %s\n' "$mark" "$step" "${DETAIL[$step]}"
+done
+
+todo() { [ "${STATUS[$1]}" != ok ]; }
+echo
+echo "To do (docs/deploy-mailcow.md explains each step):"
+if todo 1; then
+    echo " 1. DNS: A/AAAA record  $MCP_HOSTNAME  →  this server (same addresses as $MAILCOW_HOSTNAME)."
+fi
+if todo 2; then
+    if [ "$in_san" = 1 ]; then
+        cat <<EOF
+ 2. Certificate: renew it, in $MAILCOW_DIR:  docker compose up -d
+    (DNS must resolve first; follow with  docker compose logs --tail=50 acme-mailcow)
+EOF
+    else
+        cat <<EOF
  2. Certificate: in $MAILCOW_DIR/mailcow.conf set
         ADDITIONAL_SAN=${ADDITIONAL_SAN:+$ADDITIONAL_SAN,}$MCP_HOSTNAME
     then in $MAILCOW_DIR run:  docker compose up -d
 EOF
+    fi
 fi
-cat <<EOF
+if todo 3; then
+    cat <<EOF
  3. mailcow UI → System → Configuration → Access → OAuth2 Apps → add a client with redirect URI
-        https://$MCP_HOSTNAME/oauth/mailcow/callback
- 4. mailcow UI → System → Configuration → Access → Administrators → API: enable the
+        $REDIRECT_URI
+EOF
+fi
+if todo 4; then
+    cat <<EOF
+ 4. mailcow UI → System → Configuration → Access → Administrators → API: activate the
     read-write key and add to "Allow API access from":  $BROKER_IP
     (keep any addresses already there: mailcow has only one read-write key)
+EOF
+fi
+if todo 5; then
+    cat <<EOF
  5. mailcow UI → System → Configuration → Options → Fail2ban parameters → allowlist:  $APP_IP
     (every user's IMAP/SMTP login comes from this address)
 EOF
-if [ -n "$missing_env" ]; then
-    echo " 6. Fill in:$missing_env"
 fi
-cat <<EOF
+if todo 6; then
+    echo " 6. Run this again after steps 3 and 4 (it reads the values from mailcow), or fill in:$missing_env"
+fi
+if todo 7; then
+    cat <<EOF
  7. Start:  cd $KIT_DIR && docker compose up -d
     Then:   cd $MAILCOW_DIR && docker compose restart nginx-mailcow
+EOF
+fi
+cat <<EOF
  8. Back up ENC_KEY (app.env) and BROKER_SIGNING_KEY (broker.env) somewhere off this server.
- 9. Check:  curl -fsS https://$MCP_HOSTNAME/healthz
 EOF
 if [ "$APPLY" = 0 ]; then
     echo

@@ -7,6 +7,15 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+### Changed
+
+- `setup-mailcow.sh` checks every deployment step against mailcow's state and marks it ✓/✗/?:
+  DNS, the certificate file, the OAuth2 app and read-write API key (mailcow's database), the
+  Fail2ban allowlist (mailcow's Redis), and whether mailcow-mcp is running and routed. It reads the
+  OAuth2 client and API key from mailcow, so they no longer have to be copied, and fills in empty
+  values in existing env files. The nginx site file is checked with `nginx -t` and disabled if
+  nginx rejects it.
+
 ## [0.1.0] - 2026-10-01
 
 First release.

@@ -50,12 +50,11 @@ cd /opt/mailcow-mcp
 ./setup-mailcow.sh --hostname mcp.example.com      # read-only: shows what it will do
 ```
 
-It prints the remaining steps with exact values: add the name to `ADDITIONAL_SAN`, create an
-OAuth2 app and enable the API key in the mailcow UI, allowlist the app in Fail2ban. Then:
+It checks each step against mailcow (DNS, certificate, OAuth2 app, API key, Fail2ban allowlist)
+and lists what's left, with exact values. Once the mailcow-side steps show ✓:
 
 ```sh
-./setup-mailcow.sh --hostname mcp.example.com \
-    --oauth-client-id <ID> --oauth-client-secret <SECRET> --api-key <KEY> --apply
+./setup-mailcow.sh --hostname mcp.example.com --apply   # writes .env, app.env, broker.env here
 docker compose up -d
 (cd /opt/mailcow-dockerized && docker compose restart nginx-mailcow)
 ```

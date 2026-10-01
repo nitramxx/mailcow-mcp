@@ -540,7 +540,7 @@ class TestPurge:
         harness.clock.advance(UNUSED_CLIENT_TTL + 1)
         provider.purge_expired()
         for table in ("clients", "grants", "mailboxes", "tokens", "auth_codes"):
-            assert harness.db.one(f"SELECT count(*) AS n FROM {table}")["n"] == 0  # type: ignore[index]  # noqa: S608
+            assert harness.db.one(f"SELECT count(*) AS n FROM {table}")["n"] == 0  # type: ignore[index]
 
     def test_abandoned_sign_in_is_cleaned_up(self, harness: Harness) -> None:
         provider = harness.provider
