@@ -17,6 +17,11 @@ x-hardening: &hardening
   security_opt:
     - no-new-privileges:true
   user: "10001:10001"
+  # IPv4 only: mailcow's API allowlist and Fail2ban allowlist name the fixed IPv4 addresses.
+  # On a dual-stack mailcow network the containers would otherwise also get (changing) IPv6
+  # addresses and connect from those.
+  sysctls:
+    net.ipv6.conf.all.disable_ipv6: 1
   logging:
     driver: json-file
     options:

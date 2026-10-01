@@ -36,6 +36,17 @@ class TokenRejected(MailcowError):
     """mailcow didn't accept the OAuth token (expired, wrong scope, inactive mailbox)."""
 
 
+def _message(response: httpx.Response) -> str:
+    """mailcow's reason, e.g. "api access denied for ip 172.22.1.9" (never contains the key)."""
+    try:
+        data = response.json()
+    except ValueError:
+        return response.text[:200]
+    if isinstance(data, dict):
+        return str(data.get("msg") or data.get("message") or "")[:200]
+    return ""
+
+
 def _ssl_context(server_name: str, verify: bool, ca_file: Any) -> ssl.SSLContext:
     return client_context(server_name=server_name, verify=verify, ca_file=ca_file)
 
@@ -83,8 +94,13 @@ class MailcowApi:
             log.warning("mailcow API %s %s failed: %s", method, path, exc)
             raise MailcowUnavailable(f"mailcow API unreachable: {type(exc).__name__}") from exc
         if response.status_code in (401, 403):
+            reason = _message(response)
+            log.warning(
+                "mailcow API refused %s %s: HTTP %s %s", method, path, response.status_code, reason
+            )
             raise MailcowError(
-                f"mailcow API refused the request (HTTP {response.status_code}); check the API key and 'Allow API access from'"
+                f"mailcow API refused the request (HTTP {response.status_code}: {reason}); "
+                "check the API key and 'Allow API access from'"
             )
         if response.status_code >= 400:
             raise MailcowError(f"mailcow API error: HTTP {response.status_code}")

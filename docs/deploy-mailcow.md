@@ -191,6 +191,7 @@ Then connect your MCP client: see [clients.md](clients.md).
 |---|---|
 | Consent page: "mailcow can't be reached" | `docker compose logs app`. The app reaches mailcow at `https://nginx-mailcow` (`MAILCOW_INTERNAL_URL`); the certificate is checked against `TLS_SERVER_NAME` (your `MAILCOW_HOSTNAME`). |
 | "Signing in with mailcow didn't work" | `docker compose logs app broker`. Typical: redirect URI in the OAuth2 app not exactly `https://mcp.example.com/oauth/mailcow/callback`; wrong client secret; API key not active or the broker's address missing from "Allow API access from" (the broker log says `HTTP 401`/`403`). |
+| "mailcow can't be reached" right after mailcow's consent; broker log: `mailcow API refused … HTTP 401: api access denied for ip …` | The address in the message isn't in "Allow API access from" (step 5). Since 0.1.3 both containers are IPv4-only, so it's the broker's fixed address; run `sudo ./setup-mailcow.sh` and see step 9. `docker compose exec broker mailcow-mcp check-mailcow` tests the key directly. |
 | Sign-in loops back to mailcow's login | Someone is logged into the mailcow UI as **admin** in the same browser. Sign out of mailcow first, or use another browser profile. |
 | `502` on `https://mcp.example.com` | The app isn't running or not healthy: `docker compose ps`, `docker compose logs app`. |
 | Tools fail with "can't be reached" | IMAP/SMTP: `IMAP_HOST=dovecot-mailcow`, `SMTP_HOST=postfix-mailcow` must resolve on mailcow's network (the kit attaches the app to it). |

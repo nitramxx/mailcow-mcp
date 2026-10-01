@@ -255,6 +255,39 @@ def _deprovision_now(config: AppConfig, provider: Provider, *, everything: bool)
     return 0
 
 
+def cmd_check_mailcow(args: argparse.Namespace) -> int:
+    """Broker: can it use the mailcow API with its key, from its address?"""
+    try:
+        config = load_broker_config()
+    except ConfigError as exc:
+        return _fail(str(exc))
+    from mailcow_mcp.mailcow_api import MailcowApi, MailcowError
+
+    async def run() -> str | None:
+        api = MailcowApi(
+            config.mailcow_api_url,
+            config.mailcow_api_key,
+            config.mailcow_oauth_profile_url,
+            server_name=config.tls_server_name,
+            verify=config.tls_verify,
+            ca_file=config.tls_ca_file,
+        )
+        try:
+            await api.password_policy()
+        except MailcowError as exc:
+            return str(exc)
+        finally:
+            await api.aclose()
+        return None
+
+    error = anyio.run(run)
+    if error:
+        print(f"mailcow-mcp: {error}", file=sys.stderr)
+        return 1
+    print("mailcow API: ok")
+    return 0
+
+
 def cmd_generate_key(args: argparse.Namespace) -> int:
     print(generate_key())
     return 0
@@ -301,6 +334,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "generate-key", help="print a new key for ENC_KEY, BROKER_SIGNING_KEY, BROKER_SHARED_SECRET"
     ).set_defaults(func=cmd_generate_key)
+    sub.add_parser(
+        "check-mailcow", help="broker: check that the mailcow API accepts its key and address"
+    ).set_defaults(func=cmd_check_mailcow)
     sub.add_parser("migrate", help="apply database migrations (also done on start)").set_defaults(
         func=cmd_migrate
     )

@@ -119,6 +119,17 @@ class TestTransport:
         assert (await broker.call("delete_everything")).status_code == 404
         assert (await broker.call("provision")).status_code == 400
 
+    async def test_mailcow_refusal_reason_is_reported(
+        self, running_mailcow: RunningMailcow, mailcow: MockMailcow, certs: Path, tmp_path: Path
+    ) -> None:
+        wrong = make_broker(running_mailcow, certs, tmp_path, MAILCOW_API_KEY="WRONG-KEY")
+        response = await wrong.call(
+            "provision", mailcow_oauth_token=token_for(mailcow, "alice@example.test")
+        )
+        assert response.status_code == 502
+        assert "HTTP 401: authentication failed" in response.json()["message"]
+        assert "WRONG-KEY" not in response.text
+
     async def test_tls_name_is_verified(
         self, running_mailcow: RunningMailcow, mailcow: MockMailcow, certs: Path, tmp_path: Path
     ) -> None:

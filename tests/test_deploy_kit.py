@@ -84,7 +84,19 @@ def fake_mailcow(tmp_path_factory: pytest.TempPathFactory, image: str) -> Iterat
     for name in ("docker-compose.yml", "mailcow-mcp.conf.template", "setup-mailcow.sh"):
         shutil.copy2(KIT / name, kit / name)
     network = f"{project}_mailcow-network"
-    run("docker", "network", "create", "--subnet", f"{subnet}.0/24", network)
+    # Dual-stack, like mailcow with IPv6 enabled.
+    v6 = f"fd00:{octet:x}:{uuid.uuid4().hex[:4]}::/64"
+    run(
+        "docker",
+        "network",
+        "create",
+        "--ipv6",
+        "--subnet",
+        f"{subnet}.0/24",
+        "--subnet",
+        v6,
+        network,
+    )
     fake = FakeMailcow(directory, kit, network, project, subnet)
     try:
         yield fake
@@ -266,6 +278,13 @@ def test_containers_are_healthy_and_isolated(applied: FakeMailcow, nginx: str) -
         "import urllib.request; print(urllib.request.urlopen('http://mcp-broker:8091/healthz', timeout=5).read().decode())",
     ).stdout
     assert '"role":"broker"' in reached
+    # IPv4 only, so mailcow's allowlists (which name the fixed IPv4 addresses) apply.
+    for service in ("app", "broker"):
+        container = run(
+            "docker", "compose", "ps", "-q", service, cwd=applied.kit, env=env
+        ).stdout.strip()
+        ipv6 = run("docker", "exec", container, "cat", "/proc/net/if_inet6").stdout.strip()
+        assert ipv6 == "", f"{service} has IPv6 addresses: {ipv6}"
     # Hardening as configured.
     inspect = run(
         "docker",

@@ -60,6 +60,9 @@ class BrokerClient:
             return data
         code = str(data.get("error", "error")) if isinstance(data, dict) else "error"
         message = str(data.get("message", code)) if isinstance(data, dict) else code
+        log.warning(
+            "broker %s refused: HTTP %s %s: %s", operation, response.status_code, code, message
+        )
         if response.status_code == 401:
             log.error("the broker refused BROKER_SHARED_SECRET; check both containers' settings")
             raise ServerUnavailable("The mailcow connector (broker)")

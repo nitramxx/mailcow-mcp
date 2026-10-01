@@ -7,6 +7,20 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-02
+
+### Fixed
+
+- mailcow with IPv6 enabled: the containers also got IPv6 addresses on mailcow's network and
+  connected from those, so mailcow's API refused the broker ("api access denied") and the
+  Fail2ban allowlist didn't cover the app. Both containers are now IPv4-only
+  (`net.ipv6.conf.all.disable_ipv6`), so mailcow always sees their fixed addresses.
+
+### Added
+
+- The broker logs mailcow's reason when the API refuses it; `mailcow-mcp check-mailcow` (broker)
+  tests the API key and address, and `setup-mailcow.sh` runs it in step 9.
+
 ## [0.1.2] - 2026-10-02
 
 ### Fixed
@@ -88,7 +102,8 @@ First release.
   user guide.
 - Multi-arch image (linux/amd64, linux/arm64) on GHCR with SBOM and provenance.
 
-[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/nitramxx/mailcow-mcp/releases/tag/v0.1.0

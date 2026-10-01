@@ -455,8 +455,11 @@ if [ -f "$KIT_DIR/.env" ]; then
 fi
 if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$running"; then
     health="$(curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" 2>/dev/null)" || health=""
+    api_check="$(docker compose --project-directory "$KIT_DIR" exec -T broker mailcow-mcp check-mailcow 2>&1)" || true
     if [ -n "$health" ] && ! grep -q '"broker":"ok"' <<<"$health"; then
         check 9 todo "the app can't reach the broker (BROKER_URL in app.env must be http://mcp-broker:8091, as in docker-compose.yml)"
+    elif ! grep -q "mailcow API: ok" <<<"$api_check"; then
+        check 9 todo "the broker can't use the mailcow API: ${api_check#mailcow-mcp: }"
     elif [ -n "$health" ]; then
         check 9 ok "app and broker healthy; https://$MCP_HOSTNAME/healthz answers through mailcow's nginx"
     else
