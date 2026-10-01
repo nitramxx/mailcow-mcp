@@ -49,7 +49,9 @@ jobs:
             dir=$(mktemp -d)
             cp -a "deploy/$kit/." "$dir/"
             echo "$version" > "$dir/VERSION"
-            tar -C "$dir" --owner=0 --group=0 -czf "$kit-kit.tar.gz" .
+            # Files only, no "./" entry: extracting must not change the directory's owner.
+            (cd "$dir" && find . -mindepth 1 -maxdepth 1 -printf '%P\n' | sort > ../files.txt)
+            tar -C "$dir" --owner=0 --group=0 -czf "$kit-kit.tar.gz" -T "$dir/../files.txt"
             sha256sum "$kit-kit.tar.gz" > "$kit-kit.tar.gz.sha256"
           done
           tar -tzvf mailcow-kit.tar.gz
