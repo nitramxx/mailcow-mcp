@@ -406,6 +406,9 @@ if todo 7; then
     echo " 7. Run this again after steps 4 and 5 (it reads the values from mailcow), or fill in:$missing_env"
 fi
 if todo 9; then
+    if [ ! -f "$KIT_DIR/app.env" ]; then
+        echo " 7. Write the files: run this again with --apply. Then:"
+    fi
     cat <<EOF
  7. Start:  cd $KIT_DIR && docker compose up -d
     Then:   cd $MAILCOW_DIR && docker compose restart nginx-mailcow
