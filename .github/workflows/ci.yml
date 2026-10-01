@@ -37,10 +37,25 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
+      - name: Install WeasyPrint system libraries
+        run: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0
       - run: uv sync --locked
-      - run: uv run pytest
-      # Integration tests (Dovecot + Postfix test containers, mocked mailcow API/OAuth)
-      # and OAuth flow tests are added with phases 1–6.
+      - run: uv run pytest -m "not integration"
+
+  integration:
+    # Against a real Dovecot + Postfix server in Docker (tests/mailserver).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install WeasyPrint system libraries
+        run: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0
+      - run: uv sync --locked
+      - run: uv run pytest -m integration
 
   image:
     runs-on: ubuntu-24.04

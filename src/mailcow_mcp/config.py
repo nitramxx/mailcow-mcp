@@ -48,6 +48,7 @@ class SaveSent(StrEnum):
 
 
 LANGUAGES = ("en", "cs")
+FOLDER_ROLES = ("sent", "drafts", "junk", "trash")
 
 
 class ConfigError(Exception):
@@ -84,6 +85,7 @@ class AppConfig:
     # None (generic mode only): verify each server against the host connected to.
     tls_server_name: str | None
     tls_verify: bool
+    tls_ca_file: Path | None
     allow_password_login: bool
     allowed_domains: tuple[str, ...]
     enc_key: str = field(repr=False)
@@ -96,6 +98,8 @@ class AppConfig:
     default_language: str
     data_dir: Path
     port: int
+    # Folder names to try after SPECIAL-USE flags, before the common names.
+    folder_names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,7 @@ class BrokerConfig:
     mailcow_api_url: str
     tls_server_name: str
     tls_verify: bool
+    tls_ca_file: Path | None
     mailcow_api_key: str = field(repr=False)
     mailcow_oauth_profile_url: str
     broker_shared_secret: str = field(repr=False)
@@ -285,6 +290,25 @@ class _Reader:
                 result.append(domain)
         return tuple(dict.fromkeys(result))
 
+    def file(self, name: str) -> Path | None:
+        value = self.raw(name)
+        if value is None:
+            return None
+        path = Path(value)
+        if not path.is_file():
+            self.error(name, f"no such file: {value}")
+            return None
+        return path
+
+    def folders(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for role in FOLDER_ROLES:
+            name = f"FOLDER_{role.upper()}"
+            value = self.text(name, "", 200)
+            if value:
+                result[role] = value
+        return result
+
     def text(self, name: str, default: str, max_length: int) -> str:
         value = self.raw(name)
         if value is None:
@@ -382,6 +406,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         carddav_url=carddav_url,
         tls_server_name=tls_server_name,
         tls_verify=tls_verify,
+        tls_ca_file=r.file("TLS_CA_FILE"),
         allow_password_login=allow_password_login,
         allowed_domains=r.domains("ALLOWED_DOMAINS"),
         enc_key=r.key("ENC_KEY"),
@@ -394,6 +419,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         default_language=language,
         data_dir=Path(r.raw("DATA_DIR") or "/data"),
         port=r.port("PORT", DEFAULT_APP_PORT),
+        folder_names=r.folders(),
     )
     r.raise_if_errors(f"app configuration (MODE={mode.value})")
     return config
@@ -418,6 +444,7 @@ def load_broker_config(env: Mapping[str, str] | None = None) -> BrokerConfig:
             r.required("TLS_SERVER_NAME", "the mailcow hostname, e.g. mail.example.com"),
         ),
         tls_verify=r.boolean("TLS_VERIFY", True),
+        tls_ca_file=r.file("TLS_CA_FILE"),
         mailcow_api_key=r.required("MAILCOW_API_KEY", "mailcow → System → Configuration → Access"),
         mailcow_oauth_profile_url=r.url("MAILCOW_OAUTH_PROFILE_URL", profile_raw, allow_path=True),
         broker_shared_secret=r.secret("BROKER_SHARED_SECRET"),

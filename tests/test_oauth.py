@@ -177,6 +177,28 @@ class TestAuthorize:
         response = harness.client.get("/authorize", params=query, follow_redirects=False)
         assert response.status_code == 400
 
+    def test_loopback_redirect_may_use_any_port(self, harness: Harness) -> None:
+        # VS Code registers http://127.0.0.1/ and may then listen on a random port.
+        client_id = harness.register(
+            redirect_uris=["http://127.0.0.1/", "https://vscode.dev/redirect"]
+        )["client_id"]
+        _, challenge = pkce_pair()
+        for uri, ok in [
+            ("http://127.0.0.1:54321/", True),
+            ("http://127.0.0.1/", True),
+            ("http://127.0.0.1:54321/other", False),
+            ("http://localhost:54321/", False),
+            ("https://vscode.dev:8443/redirect", False),
+        ]:
+            query = {
+                "client_id": client_id,
+                "redirect_uri": uri,
+                "response_type": "code",
+                "code_challenge": challenge,
+            }
+            response = harness.client.get("/authorize", params=query, follow_redirects=False)
+            assert (response.status_code == 302) is ok, uri
+
     def test_pkce_is_required(self, harness: Harness) -> None:
         client_id = harness.register()["client_id"]
         query = {"client_id": client_id, "redirect_uri": REDIRECT_URI, "response_type": "code"}

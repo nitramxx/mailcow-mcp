@@ -84,7 +84,7 @@ class MemoryStorage:
         self.client = client_info
 
 
-def test_sdk_client_connects_and_lists_no_tools(server_url: str) -> None:
+def test_sdk_client_connects_and_lists_tools(server_url: str) -> None:
     storage = MemoryStorage()
     result: dict[str, AuthorizationCodeResult] = {}
 
@@ -133,15 +133,21 @@ def test_sdk_client_connects_and_lists_no_tools(server_url: str) -> None:
         callback_handler=callback,
     )
 
-    async def run() -> list[str]:
+    async def run() -> dict[str, bool | None]:
         async with (
             httpx2.AsyncClient(auth=auth, timeout=10) as http,
             Client(streamable_http_client(f"{server_url}/mcp", http_client=http)) as client,
         ):
             tools = await client.list_tools()
-            return [tool.name for tool in tools.tools]
+            return {
+                tool.name: tool.annotations.destructive_hint if tool.annotations else None
+                for tool in tools.tools
+            }
 
-    assert anyio.run(run) == []
+    tools = anyio.run(run)
+    assert tools["send_email"] is True
+    assert tools["send_draft"] is True
+    assert tools["save_draft"] is False
     assert storage.tokens is not None
     assert storage.tokens.access_token.startswith("mcp_at_")
     assert storage.client is not None

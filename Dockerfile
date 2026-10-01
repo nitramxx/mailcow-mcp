@@ -25,12 +25,19 @@ LABEL org.opencontainers.image.title="mailcow-mcp" \
       org.opencontainers.image.description="Self-hosted remote MCP server for mailcow" \
       org.opencontainers.image.source="https://github.com/nitramxx/mailcow-mcp" \
       org.opencontainers.image.licenses="MIT"
+# Pango/HarfBuzz for WeasyPrint (Markdown → PDF), DejaVu for wide Unicode coverage.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fonts-dejavu-core fontconfig \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f
 RUN useradd --system --uid 10001 --user-group --home-dir /nonexistent --shell /usr/sbin/nologin mcp \
     && install -d -o 10001 -g 10001 -m 0700 /data
 COPY --from=build /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    XDG_CACHE_HOME=/tmp/cache \
     DATA_DIR=/data
 USER 10001:10001
 WORKDIR /data

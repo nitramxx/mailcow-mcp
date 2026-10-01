@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import socket
 import ssl
+from pathlib import Path
 from typing import Any
 
 
@@ -28,8 +29,13 @@ class _FixedNameContext(ssl.SSLContext):
         return super().wrap_bio(incoming, outgoing, *args, **kwargs)
 
 
-def client_context(*, server_name: str | None, verify: bool = True) -> ssl.SSLContext:
-    """A TLS 1.2+ client context; ``server_name`` overrides the name verified."""
+def client_context(
+    *, server_name: str | None, verify: bool = True, ca_file: Path | None = None
+) -> ssl.SSLContext:
+    """A TLS 1.2+ client context; ``server_name`` overrides the name verified.
+
+    ``ca_file`` adds a private CA to the system trust store.
+    """
     context: ssl.SSLContext
     if server_name:
         context = _FixedNameContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -39,6 +45,8 @@ def client_context(*, server_name: str | None, verify: bool = True) -> ssl.SSLCo
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     if verify:
         context.load_default_certs()
+        if ca_file is not None:
+            context.load_verify_locations(cafile=str(ca_file))
         context.check_hostname = True
         context.verify_mode = ssl.CERT_REQUIRED
     else:

@@ -31,6 +31,7 @@ from mcp.server.auth.provider import (
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import AnyUrl
 
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.crypto import Box, hash_secret, new_secret
@@ -82,6 +83,27 @@ class PendingAuthorization:
     @property
     def redirect_uri(self) -> str:
         return str(self.params.redirect_uri)
+
+
+def _loopback_matches(requested: str, registered: str) -> bool:
+    """RFC 8252 §7.3: for loopback redirect URIs, any port matches."""
+    a, b = urlsplit(requested), urlsplit(registered)
+    return (
+        a.scheme == b.scheme == "http"
+        and a.hostname in LOOPBACK_HOSTS
+        and a.hostname == b.hostname
+        and a.path == b.path
+        and a.query == b.query
+    )
+
+
+class RegisteredClient(OAuthClientInformationFull):
+    def validate_redirect_uri(self, redirect_uri: AnyUrl | None) -> AnyUrl:
+        if redirect_uri is not None and self.redirect_uris:
+            requested = str(redirect_uri)
+            if any(_loopback_matches(requested, str(uri)) for uri in self.redirect_uris):
+                return redirect_uri
+        return super().validate_redirect_uri(redirect_uri)
 
 
 def is_allowed_redirect_uri(uri: str) -> bool:
@@ -151,7 +173,7 @@ class Provider(
         data = json.loads(row["metadata"])
         if row["client_secret_enc"]:
             data["client_secret"] = self.box.decrypt(row["client_secret_enc"])
-        return OAuthClientInformationFull.model_validate(data)
+        return RegisteredClient.model_validate(data)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         uris = [str(uri) for uri in client_info.redirect_uris or []]
@@ -327,7 +349,7 @@ class Provider(
             return None
         if row["used_at"] is not None:
             # RFC 6749 §4.1.2: a code used twice revokes the tokens issued from it.
-            self._revoke_grant(row["grant_id"], reason="code_reuse")
+            self.revoke_grant(row["grant_id"], reason="code_reuse")
             return None
         if row["expires_at"] <= self.now():
             return None
@@ -394,7 +416,7 @@ class Provider(
             return None
         if row["used_at"] is not None:
             # OAuth 2.1 §4.3.1: a rotated refresh token used again means it leaked.
-            self._revoke_grant(row["grant_id"], reason="refresh_token_reuse")
+            self.revoke_grant(row["grant_id"], reason="refresh_token_reuse")
             return None
         if row["expires_at"] <= self.now():
             return None
@@ -450,7 +472,7 @@ class Provider(
         )
 
     async def revoke_token(self, token: MailboxAccessToken | GrantRefreshToken) -> None:
-        self._revoke_grant(token.grant_id, reason="revoked")
+        self.revoke_grant(token.grant_id, reason="revoked")
 
     # --- grants and cleanup --------------------------------------------------
 
@@ -462,7 +484,7 @@ class Provider(
         )
         return (row["username"], row["client_name"]) if row else (None, None)
 
-    def _revoke_grant(self, grant_id: int, *, reason: str) -> None:
+    def revoke_grant(self, grant_id: int, *, reason: str) -> None:
         mailbox, client = self._grant_info(grant_id)
         if mailbox is None:
             return
@@ -482,7 +504,7 @@ class Provider(
             (username,),
         )
         for row in rows:
-            self._revoke_grant(row["id"], reason="revoked")
+            self.revoke_grant(row["id"], reason="revoked")
         self.db.execute("DELETE FROM mailboxes WHERE username = ?", (username,))
         return len(rows)
 
@@ -506,7 +528,7 @@ class Provider(
             " AND NOT EXISTS (SELECT 1 FROM auth_codes a WHERE a.grant_id = g.id AND a.used_at IS NULL)"
         )
         for row in ended:
-            self._revoke_grant(row["id"], reason="expired")
+            self.revoke_grant(row["id"], reason="expired")
         counts["grants"] = len(ended)
         with self.db.transaction() as conn:
             counts["clients"] = conn.execute(

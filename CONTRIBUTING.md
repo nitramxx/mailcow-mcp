@@ -7,11 +7,19 @@ Report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
 ```sh
 uv sync                       # creates .venv with runtime and dev dependencies
-uv run pytest                 # tests
+uv run pytest                 # tests (integration tests need Docker)
+uv run pytest -m "not integration"
 uv run ruff check .           # lint
 uv run ruff format .          # format
 uv run mypy                   # type check (strict)
 ```
+
+PDF rendering uses WeasyPrint, which needs Pango. On macOS: `brew install pango` and run tests
+with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`. On Debian/Ubuntu:
+`apt install libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0`.
+
+Integration tests start a real Dovecot + Postfix server from `tests/mailserver` in Docker
+(Docker Desktop, Colima or plain Docker; no bind mounts, so any VM setup works).
 
 ## Guidelines
 

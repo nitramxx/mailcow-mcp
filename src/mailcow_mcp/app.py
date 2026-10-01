@@ -34,6 +34,8 @@ from mailcow_mcp.imap import ImapPasswordVerifier, PasswordVerifier
 from mailcow_mcp.login import LOGIN_PATH, LoginPages
 from mailcow_mcp.oauth import Provider, client_ip
 from mailcow_mcp.ratelimit import RateLimiter
+from mailcow_mcp.services import Services
+from mailcow_mcp.tools import register_tools
 
 log = logging.getLogger(__name__)
 
@@ -167,9 +169,10 @@ def _static_route() -> Route:
 class App:
     """The ASGI app, with its OAuth provider at hand (for the CLI and tests)."""
 
-    def __init__(self, asgi: ASGIApp, provider: Provider) -> None:
+    def __init__(self, asgi: ASGIApp, provider: Provider, services: Services) -> None:
         self.asgi = asgi
         self.provider = provider
+        self.services = services
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         await self.asgi(scope, receive, send)
@@ -225,9 +228,10 @@ def create_app(
     db.migrate()
     audit = audit if audit is not None else AuditLog.in_data_dir(config.data_dir)
     resource_url = config.public_url + MCP_PATH
+    box = Box(config.enc_key)
     provider = Provider(
         db,
-        Box(config.enc_key),
+        box,
         issuer_url=config.public_url,
         resource_url=resource_url,
         login_url=config.public_url + LOGIN_PATH,
@@ -262,6 +266,8 @@ def create_app(
             }
         ),
     )
+    services = Services(config, db, box, provider, audit, clock=clock)
+    register_tools(mcp, services)
     mcp_app = mcp.streamable_http_app(
         streamable_http_path=MCP_PATH,
         # Requests carry bearer tokens, not cookies, so DNS rebinding can't borrow
@@ -360,4 +366,4 @@ def create_app(
     )
     app = McpCORSMiddleware(app)
     app = SecurityHeadersMiddleware(app, hsts=config.public_url.startswith("https://"))
-    return App(ClientIPMiddleware(app), provider)
+    return App(ClientIPMiddleware(app), provider, services)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import re
 import secrets
 import time
@@ -20,6 +21,8 @@ from mailcow_mcp.config import AppConfig, generate_key, load_app_config
 from mailcow_mcp.db import Database
 from mailcow_mcp.imap import LoginResult
 from mailcow_mcp.oauth import Provider
+
+from mailserver_fixture import mailserver  # noqa: F401 - pytest fixture
 
 BASE_URL = "http://localhost:8090"
 REDIRECT_URI = "http://127.0.0.1:3333/callback"
@@ -149,11 +152,13 @@ class Harness:
         data.update(extra)
         return self.client.post("/login", data=data, follow_redirects=False)
 
-    def sign_in(self, client_id: str) -> tuple[str, str]:
+    def sign_in(
+        self, client_id: str, email: str = EMAIL, password: str = PASSWORD
+    ) -> tuple[str, str]:
         """Full sign-in; returns (authorization code, PKCE verifier)."""
         verifier, challenge = pkce_pair()
         request_id, csrf = self.open_login(self.authorize(client_id, challenge))
-        response = self.submit_login(request_id, csrf)
+        response = self.submit_login(request_id, csrf, email=email, password=password)
         assert response.status_code == 303, response.text
         params = query_of(response.headers["location"])
         assert params["state"] == "state-123"
@@ -171,10 +176,12 @@ class Harness:
             },
         )
 
-    def tokens(self, client_id: str | None = None) -> tuple[str, dict[str, Any]]:
+    def tokens(
+        self, client_id: str | None = None, email: str = EMAIL, password: str = PASSWORD
+    ) -> tuple[str, dict[str, Any]]:
         """Register (unless given), sign in and exchange; returns (client id, token response)."""
         client_id = client_id or self.register()["client_id"]
-        code, verifier = self.sign_in(client_id)
+        code, verifier = self.sign_in(client_id, email, password)
         response = self.exchange(client_id, code, verifier)
         assert response.status_code == 200, response.text
         return client_id, response.json()
@@ -205,19 +212,87 @@ class Harness:
         }
         return self.client.post("/mcp", headers=headers, json=body)
 
+    def session(self, email: str = EMAIL, password: str = PASSWORD) -> McpSession:
+        """Sign in and open an MCP session."""
+        _, tokens = self.tokens(email=email, password=password)
+        return McpSession(self.client, tokens["access_token"])
+
+
+class ToolFailed(Exception):
+    pass
+
+
+class McpSession:
+    """A minimal Streamable HTTP client for tool calls in tests."""
+
+    def __init__(self, client: TestClient, access_token: str) -> None:
+        self.client = client
+        self.headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-11-25",
+        }
+        self._id = 0
+        result = self.request(
+            "initialize",
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            },
+        )
+        assert "serverInfo" in result
+        self.client.post(
+            "/mcp",
+            headers=self.headers,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+
+    def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._id += 1
+        response = self.client.post(
+            "/mcp",
+            headers=self.headers,
+            json={"jsonrpc": "2.0", "id": self._id, "method": method, "params": params},
+        )
+        if response.status_code != 200:
+            raise ToolFailed(f"HTTP {response.status_code}: {response.text}")
+        if session_id := response.headers.get("mcp-session-id"):
+            self.headers["mcp-session-id"] = session_id
+        for line in response.text.splitlines():
+            if line.startswith("data: "):
+                message = json.loads(line[6:])
+                if message.get("id") == self._id:
+                    if "error" in message:
+                        raise ToolFailed(json.dumps(message["error"]))
+                    result: dict[str, Any] = message["result"]
+                    return result
+        raise AssertionError(f"no response in {response.text!r}")
+
+    def call(self, name: str, **arguments: Any) -> dict[str, Any]:
+        """Call a tool; returns its structured result or raises ToolFailed with its message."""
+        result = self.request("tools/call", {"name": name, "arguments": arguments})
+        if result.get("isError"):
+            raise ToolFailed(result["content"][0]["text"])
+        structured: dict[str, Any] = result["structuredContent"]
+        return structured
+
 
 def make_harness(
-    config: AppConfig, verifier: FakeVerifier | None = None, db: Database | None = None
+    config: AppConfig,
+    verifier: FakeVerifier | None = None,
+    db: Database | None = None,
+    *,
+    real_login: bool = False,
 ) -> Iterator[Harness]:
+    """real_login: check passwords with the configured IMAP server instead of a fake."""
     db = db or Database(":memory:")
     clock = Clock()
     stream = io.StringIO()
-    verifier = verifier or FakeVerifier()
-    app = create_app(
-        config, db=db, audit=AuditLog(None, stream=stream), verifier=verifier, clock=clock
-    )
+    fake = None if real_login else (verifier or FakeVerifier())
+    app = create_app(config, db=db, audit=AuditLog(None, stream=stream), verifier=fake, clock=clock)
     with TestClient(app, base_url=BASE_URL) as client:
-        yield Harness(client, app.provider, db, clock, verifier, stream)
+        yield Harness(client, app.provider, db, clock, fake or FakeVerifier(), stream)
 
 
 @pytest.fixture
