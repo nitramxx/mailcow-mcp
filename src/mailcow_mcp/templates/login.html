@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ t("page_title") }}{% endblock %}
+{% block content %}
+<h1>{{ t("heading") }}</h1>
+<p class="client">{{ t("client_wants", client=client_name or t("client_unnamed")) }}</p>
+
+<dl class="redirect">
+  <dt>{{ t("redirect_label") }}</dt>
+  <dd>{% if redirect_loopback %}{{ t("redirect_loopback", host=redirect_host) }}{% else %}<strong>{{ redirect_host }}</strong>{% endif %}</dd>
+</dl>
+<p class="muted">{{ t("redirect_check") }}</p>
+
+<h2>{{ t("can_heading") }}</h2>
+<ul class="access">
+  <li>{{ t("can_send") }}</li>
+  <li>{{ t("can_read") }}</li>
+  <li>{{ t("can_contacts") }}</li>
+</ul>
+<p class="muted">{{ t("cannot") }}</p>
+
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+<form method="post" action="/login" class="login">
+  <input type="hidden" name="request" value="{{ request_id }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if password_login %}
+  <label for="email">{{ t("email_label") }}</label>
+  <input id="email" name="email" type="email" autocomplete="username" required maxlength="254" value="{{ email }}" autofocus>
+  <label for="password">{{ t("password_label") }}</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+  <p class="hint">{{ t("password_hint") }}</p>
+  <button type="submit" name="action" value="login" class="primary">{{ t("submit") }}</button>
+  {% endif %}
+  <button type="submit" name="action" value="deny" class="secondary" formnovalidate>{{ t("cancel") }}</button>
+</form>
+
+<footer>
+  <p>{{ t("privacy_password") }}</p>
+  <p>{{ t("privacy_agent") }}</p>
+</footer>
+{% endblock %}

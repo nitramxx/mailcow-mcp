@@ -5,8 +5,8 @@ MCP client (Claude, Cursor, VS Code, Claude Code, …) by URL, sign in with your
 and an agent can send, draft, read and follow up on email: attachments, reply tracking, rescuing
 replies from spam and quarantine, delivery status and contacts.
 
-> **Status: early development (phase 0 of 8).** Nothing is usable yet. Only the scaffold,
-> configuration validation and key generation exist. Don't deploy it.
+> **Status: early development (phase 1 of 8).** MCP clients can connect and sign in (generic
+> mode, password login), but there are no mail tools yet. Don't deploy it.
 
 > This is a community project. It is not affiliated with or endorsed by the mailcow team or
 > The Infrastructure Company GmbH.
@@ -30,6 +30,16 @@ uv sync
 uv run pytest
 uv run ruff check . && uv run ruff format --check . && uv run mypy
 uv run mailcow-mcp generate-key
+```
+
+Run it locally in generic mode against any IMAP server, then connect an MCP client (for example
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector)) to `http://localhost:8090/mcp`:
+
+```sh
+mkdir -p data
+MODE=generic PUBLIC_URL=http://localhost:8090 TRUSTED_PROXIES=127.0.0.1 DATA_DIR=./data \
+  IMAP_HOST=imap.example.org ENC_KEY=$(uv run mailcow-mcp generate-key) \
+  uv run mailcow-mcp serve
 ```
 
 ## License

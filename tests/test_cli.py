@@ -7,7 +7,7 @@ from cryptography.fernet import Fernet
 from starlette.testclient import TestClient
 
 from mailcow_mcp import cli
-from mailcow_mcp.web import create_app
+from mailcow_mcp.broker import create_broker_app
 
 
 def test_generate_key(capsys: pytest.CaptureFixture[str]) -> None:
@@ -76,9 +76,55 @@ def test_healthcheck_fails_when_nothing_listens(monkeypatch: pytest.MonkeyPatch)
     assert cli.main(["healthcheck", "--port", "1"]) == 1
 
 
-@pytest.mark.parametrize("role", ["app", "broker"])
-def test_healthz(role: str) -> None:
-    response = TestClient(create_app(role)).get("/healthz")
+def test_broker_healthz() -> None:
+    response = TestClient(create_broker_app()).get("/healthz")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
-    assert response.json()["role"] == role
+    assert response.json() == {
+        "status": "ok",
+        "role": "broker",
+        "version": response.json()["version"],
+    }
+
+
+def _data_env(monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> None:
+    for name, value in {
+        "MODE": "generic",
+        "PUBLIC_URL": "http://localhost:8090",
+        "ENC_KEY": Fernet.generate_key().decode(),
+        "TRUSTED_PROXIES": "127.0.0.1",
+        "DATA_DIR": str(data_dir),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_migrate_users_clients_revoke(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from mailcow_mcp.db import Database
+
+    from conftest import EMAIL, app_config, make_harness
+
+    _data_env(monkeypatch, tmp_path)
+    assert cli.main(["migrate"]) == 0
+    assert "applied: 0001_oauth.sql" in capsys.readouterr().out
+    assert cli.main(["migrate"]) == 0
+    assert "up to date" in capsys.readouterr().out
+
+    # Connect a mailbox through the real flow, on the same database file.
+    for harness in make_harness(app_config(), db=Database.in_data_dir(tmp_path)):
+        harness.tokens()
+
+    assert cli.main(["users"]) == 0
+    out = capsys.readouterr().out
+    assert EMAIL in out and "Test Client" in out
+
+    assert cli.main(["clients"]) == 0
+    assert "Test Client" in capsys.readouterr().out
+
+    assert cli.main(["revoke", EMAIL.upper()]) == 0
+    assert f"revoked 1 connection(s) of {EMAIL}" in capsys.readouterr().out
+    db = Database.in_data_dir(tmp_path)
+    assert db.one("SELECT count(*) AS n FROM grants")["n"] == 0  # type: ignore[index]
+    assert '"audit":"grant_revoke"' in (tmp_path / "audit.log").read_text()
+
+    assert cli.main(["revoke", "not-an-address"]) == cli.EXIT_CONFIG

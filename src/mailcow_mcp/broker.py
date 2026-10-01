@@ -1,4 +1,4 @@
-"""HTTP applications. Phase 0 serves only the health endpoint."""
+"""The internal broker. Phases 0-3: only the health endpoint."""
 
 from __future__ import annotations
 
@@ -10,10 +10,8 @@ from starlette.routing import Route
 from mailcow_mcp import __version__
 
 
-def create_app(role: str) -> Starlette:
-    """The ASGI app for ``role`` ("app" or "broker")."""
-
+def create_broker_app() -> Starlette:
     async def healthz(request: Request) -> JSONResponse:
-        return JSONResponse({"status": "ok", "role": role, "version": __version__})
+        return JSONResponse({"status": "ok", "role": "broker", "version": __version__})
 
     return Starlette(routes=[Route("/healthz", healthz, methods=["GET"])])

@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,15 +15,22 @@ from pathlib import Path
 import uvicorn
 
 from mailcow_mcp import __version__
+from mailcow_mcp.app import MCP_PATH, create_app
+from mailcow_mcp.audit import AuditLog
+from mailcow_mcp.broker import create_broker_app
 from mailcow_mcp.config import (
     DEFAULT_APP_PORT,
     DEFAULT_BROKER_PORT,
+    AppConfig,
     ConfigError,
     generate_key,
     load_app_config,
     load_broker_config,
 )
-from mailcow_mcp.web import create_app
+from mailcow_mcp.crypto import Box
+from mailcow_mcp.db import Database
+from mailcow_mcp.login import LOGIN_PATH, normalize_email
+from mailcow_mcp.oauth import Provider
 
 log = logging.getLogger("mailcow_mcp")
 
@@ -64,7 +72,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         log.warning("TLS_VERIFY=false: mail server certificates are not verified")
     log.info("starting app %s in %s mode on port %d", __version__, config.mode, config.port)
     uvicorn.run(
-        create_app("app"),
+        create_app(config),
         host="0.0.0.0",  # noqa: S104 - runs in a container; nginx is the only route in
         port=config.port,
         proxy_headers=True,
@@ -87,13 +95,123 @@ def cmd_broker(args: argparse.Namespace) -> int:
         log.warning("TLS_VERIFY=false: the mailcow API certificate is not verified")
     log.info("starting broker %s on port %d", __version__, config.port)
     uvicorn.run(
-        create_app("broker"),
+        create_broker_app(),
         host="0.0.0.0",  # noqa: S104 - internal network only, never published
         port=config.port,
         proxy_headers=False,
         server_header=False,
         log_config=None,
     )
+    return 0
+
+
+def _open_database(config: AppConfig) -> Database:
+    db = Database.in_data_dir(config.data_dir)
+    db.migrate()
+    return db
+
+
+def _app_config() -> AppConfig | int:
+    try:
+        return load_app_config()
+    except ConfigError as exc:
+        return _fail(str(exc))
+
+
+def _when(timestamp: int | None) -> str:
+    if not timestamp:
+        return "-"
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+
+
+def _print_table(header: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
+    widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
+    for row in [header, *rows]:
+        print(
+            "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
+        )
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    config = _app_config()
+    if isinstance(config, int):
+        return config
+    db = Database.in_data_dir(config.data_dir)
+    applied = db.migrate()
+    print(f"applied: {', '.join(applied)}" if applied else "database is up to date")
+    print(f"schema version {db.version}")
+    return 0
+
+
+def cmd_users(args: argparse.Namespace) -> int:
+    config = _app_config()
+    if isinstance(config, int):
+        return config
+    rows = _open_database(config).all(
+        "SELECT m.username, count(g.id) AS grants, max(g.last_used_at) AS last_used,"
+        " m.last_login_at, group_concat(DISTINCT coalesce(c.client_name, '?')) AS clients"
+        " FROM mailboxes m LEFT JOIN grants g ON g.mailbox_id = m.id"
+        " LEFT JOIN clients c ON c.client_id = g.client_id"
+        " GROUP BY m.id ORDER BY m.username"
+    )
+    _print_table(
+        ("MAILBOX", "CONNECTIONS", "LAST LOGIN", "LAST USED", "CLIENTS"),
+        [
+            (
+                r["username"],
+                str(r["grants"]),
+                _when(r["last_login_at"]),
+                _when(r["last_used"]),
+                r["clients"] or "-",
+            )
+            for r in rows
+        ],
+    )
+    return 0
+
+
+def cmd_clients(args: argparse.Namespace) -> int:
+    config = _app_config()
+    if isinstance(config, int):
+        return config
+    rows = _open_database(config).all(
+        "SELECT c.client_id, c.client_name, c.created_at, c.last_used_at, count(g.id) AS grants"
+        " FROM clients c LEFT JOIN grants g ON g.client_id = c.client_id"
+        " GROUP BY c.client_id ORDER BY c.created_at"
+    )
+    _print_table(
+        ("CLIENT ID", "NAME", "REGISTERED", "LAST USED", "CONNECTIONS"),
+        [
+            (
+                r["client_id"],
+                r["client_name"] or "-",
+                _when(r["created_at"]),
+                _when(r["last_used_at"]),
+                str(r["grants"]),
+            )
+            for r in rows
+        ],
+    )
+    return 0
+
+
+def cmd_revoke(args: argparse.Namespace) -> int:
+    config = _app_config()
+    if isinstance(config, int):
+        return config
+    username = normalize_email(args.mailbox)
+    if username is None:
+        return _fail(f"not an email address: {args.mailbox!r}")
+    provider = Provider(
+        _open_database(config),
+        Box(config.enc_key),
+        issuer_url=config.public_url,
+        resource_url=config.public_url + MCP_PATH,
+        login_url=config.public_url + LOGIN_PATH,
+        audit=AuditLog.in_data_dir(config.data_dir),
+    )
+    count = provider.revoke_mailbox(username)
+    print(f"revoked {count} connection(s) of {username}")
     return 0
 
 
@@ -139,6 +257,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "generate-key", help="print a new key for ENC_KEY, BROKER_SIGNING_KEY, BROKER_SHARED_SECRET"
     ).set_defaults(func=cmd_generate_key)
+    sub.add_parser("migrate", help="apply database migrations (also done on start)").set_defaults(
+        func=cmd_migrate
+    )
+    sub.add_parser("users", help="list connected mailboxes").set_defaults(func=cmd_users)
+    sub.add_parser("clients", help="list registered MCP clients").set_defaults(func=cmd_clients)
+    revoke = sub.add_parser("revoke", help="disconnect every client of a mailbox")
+    revoke.add_argument("mailbox", help="email address of the mailbox")
+    revoke.set_defaults(func=cmd_revoke)
     health = sub.add_parser("healthcheck", help="exit 0 if the local server is healthy")
     health.add_argument(
         "--port", type=int, help="port to probe (default: PORT, else 8090 and 8091)"
