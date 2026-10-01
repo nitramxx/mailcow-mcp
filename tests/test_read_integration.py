@@ -11,9 +11,9 @@ import ssl
 import time
 import uuid
 from collections.abc import Iterator
-from typing import Any
 from email.message import EmailMessage
 from email.policy import default as default_policy
+from typing import Any
 
 import pytest
 from docx import Document
