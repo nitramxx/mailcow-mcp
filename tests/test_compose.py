@@ -313,8 +313,6 @@ class TestEncoding:
         raw, message = _raw_and_parsed(**fields)
         # The whole message is pure 7-bit ASCII: nothing relies on 8BITMIME.
         assert raw.isascii()
-        # RFC 5322 lines ≤ 78 (headers folded), RFC 2045 quoted-printable lines ≤ 76.
-        assert max(len(line) for line in raw.split(b"\r\n")) <= 78
         assert raw.count(b"MIME-Version") == 1
         assert b"Content-Transfer-Encoding: 8bit" not in raw
         text_parts = [p for p in message.walk() if p.get_content_maintype() == "text"]
@@ -322,6 +320,9 @@ class TestEncoding:
         for part in text_parts:
             assert part["Content-Transfer-Encoding"] == "quoted-printable"
             assert part.get_content_charset() == "utf-8"
+            # RFC 2045: quoted-printable lines at most 76 characters.
+            encoded = str(part.get_payload(decode=False))
+            assert max(len(line) for line in encoded.splitlines()) <= 76
         plain = message.get_body(("plain",))
         assert plain is not None and _text(plain) == BODY  # exactly the original text
         if path == "markdown":
@@ -390,3 +391,50 @@ class TestDefaults:
         composed = compose(build(), username="a@example.org", max_message_bytes=MB, timezone=prague)
         date = parsedate_to_datetime(str(parse_message(composed.as_bytes())["Date"]))
         assert date.utcoffset() == datetime.now(prague).utcoffset()  # +0200 / +0100, not +0000
+
+
+class TestHeadersStayIntact:
+    LONG_ID = (
+        "<DB9PR03MB7465F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D@DB9PR03MB7465.eurprd03.prod.outlook.com>"
+    )
+
+    def test_long_message_ids_are_not_encoded(self) -> None:
+        composed = compose(
+            build(in_reply_to=self.LONG_ID, references=[self.LONG_ID.replace("DB9", "AM0")]),
+            username="a@example.org",
+            max_message_bytes=MB,
+        )
+        head = composed.as_bytes().split(b"\r\n\r\n", 1)[0].decode()
+        assert f"In-Reply-To: {self.LONG_ID}" in head
+        assert f"References: {self.LONG_ID.replace('DB9', 'AM0')} {self.LONG_ID}" in head
+        assert "=?utf-8?" not in head.split("References")[1]
+
+    def test_long_filenames_stay_plain(self) -> None:
+        name = "Quarterly_financial_report_and_board_presentation_2026_Q3_final_v2.pdf"
+        composed = compose(
+            build(attachments=[FileAttachment(name, "application/pdf", b"%PDF-1.4")]),
+            username="a@example.org",
+            max_message_bytes=MB,
+        )
+        raw = composed.as_bytes()
+        assert f'filename="{name}"'.encode() in raw
+        assert b"filename*0" not in raw
+
+    def test_form_feed_doesnt_hide_a_long_line(self) -> None:
+        _, message = _raw_and_parsed(body_text="x" * 600 + "\x0c" + "y" * 600)
+        assert message["Content-Transfer-Encoding"] == "quoted-printable"
+
+    def test_stored_8bit_drafts_go_out_7bit(self) -> None:
+        from mailcow_mcp.compose import POLICY
+
+        # As another client stores it: one long header line, an 8bit UTF-8 body.
+        stored = (
+            "From: a@example.org\r\nSubject: x\r\n"
+            f"In-Reply-To: {self.LONG_ID}\r\n"
+            "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n"
+            "Content-Transfer-Encoding: 8bit\r\n\r\nPříliš žluťoučký kůň\r\n"
+        ).encode()
+        out = parse_message(stored).as_bytes(policy=POLICY)
+        assert out.isascii()
+        assert f"In-Reply-To: {self.LONG_ID}".encode() in out
+        assert _text(parse_message(out)) == "Příliš žluťoučký kůň"

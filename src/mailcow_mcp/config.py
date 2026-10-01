@@ -337,17 +337,29 @@ class _Reader:
         if value is None:
             return result
         for entry in filter(None, (e.strip() for e in re.split(r"[;\n]", value))):
-            address, eq, display = entry.partition("=")
-            address = address.strip().lower()
-            display = display.strip()
-            local, at, domain = address.rpartition("@")
-            if not eq or not at or not local or not self.hostname(name, domain):
+            # The name starts at the first "=" after the "@": local parts may contain "=".
+            at = entry.find("@")
+            eq = entry.find("=", at) if at > 0 else -1
+            if eq < 0:
                 self.error(name, f"expected address=Name entries (got {entry!r})")
                 continue
-            if not display or len(display) > 100 or any(ord(c) < 32 for c in display):
-                self.error(name, f"invalid display name for {address}")
+            local, domain = entry[:at].strip(), entry[at + 1 : eq].strip()
+            display = entry[eq + 1 :].strip()
+            try:
+                domain = domain.encode("idna").decode("ascii").lower()
+            except UnicodeError:
+                domain = ""
+            if not local or not _HOSTNAME_RE.match(domain):
+                self.error(name, f"expected address=Name entries (got {entry!r})")
                 continue
-            result[address] = display
+            if (
+                not display
+                or len(display) > 100
+                or any(ord(c) < 32 or ord(c) == 127 for c in display)
+            ):
+                self.error(name, f"invalid display name for {local}@{domain}")
+                continue
+            result[f"{local.lower()}@{domain}"] = display
         return result
 
     def timezone(self, name: str) -> tzinfo | None:
@@ -356,7 +368,7 @@ class _Reader:
             return None
         try:
             return ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError):
+        except (ZoneInfoNotFoundError, ValueError, OSError):  # OSError: "Europe" is a folder
             self.error(name, f"not a time zone name like Europe/Prague (got {value!r})")
             return None
 
@@ -372,6 +384,15 @@ class _Reader:
     def raise_if_errors(self, subject: str) -> None:
         if self.errors:
             raise ConfigError(subject, self.errors)
+
+
+def helo_name(name: str) -> str:
+    """An EHLO argument: a domain, or an address literal ("[192.0.2.1]") for an IP (RFC 5321)."""
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return name
+    return f"[{address}]" if address.version == 4 else f"[IPv6:{address}]"
 
 
 def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
@@ -462,9 +483,9 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         smtp_port=smtp_port,
         smtp_security=smtp_security,
         # EHLO name: the mail server's own name, not the container's ("[127.0.0.1]").
-        smtp_helo_name=r.hostname("SMTP_HELO_NAME", r.raw("SMTP_HELO_NAME"))
-        or tls_server_name
-        or smtp_host,
+        smtp_helo_name=helo_name(
+            r.hostname("SMTP_HELO_NAME", r.raw("SMTP_HELO_NAME")) or tls_server_name or smtp_host
+        ),
         carddav_url=carddav_url,
         carddav_internal=carddav_internal,
         tls_server_name=tls_server_name,

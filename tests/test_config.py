@@ -138,6 +138,8 @@ class TestAppMailcowMode:
             ("FROM_NAMES", "a@example.com=", "invalid display name"),
             ("FROM_NAMES", "a@example.com=Bad\x01Name", "invalid display name"),
             ("TIMEZONE", "Mars/Olympus", "time zone"),
+            ("TIMEZONE", "Europe", "time zone"),
+            ("FROM_NAMES", "a@example.com=Bad\x7fName", "invalid display name"),
             ("SMTP_HELO_NAME", "not a host", "not a valid hostname"),
         ],
     )
@@ -145,6 +147,22 @@ class TestAppMailcowMode:
         with pytest.raises(ConfigError) as exc:
             load_app_config(mailcow_env(**{name: value}))
         assert message in "\n".join(exc.value.errors)
+
+    def test_from_names_edge_cases(self) -> None:
+        c = load_app_config(
+            mailcow_env(FROM_NAMES="a=b@example.com=Equals Name; info@příklad.cz=Info")
+        )
+        assert c.from_names == {
+            "a=b@example.com": "Equals Name",
+            "info@xn--pklad-zsa96e.cz": "Info",
+        }
+        with pytest.raises(ConfigError) as exc:
+            load_app_config(mailcow_env(FROM_NAMES="a@bad_domain=X"))
+        assert len(exc.value.errors) == 1  # reported once
+
+    def test_helo_name_for_an_ip(self) -> None:
+        c = load_app_config(generic_env(SMTP_HOST="192.168.1.20"))
+        assert c.smtp_helo_name == "[192.168.1.20]"
 
     def test_empty_values_count_as_missing(self) -> None:
         with pytest.raises(ConfigError) as exc:

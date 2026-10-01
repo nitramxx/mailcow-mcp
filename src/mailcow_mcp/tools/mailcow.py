@@ -8,7 +8,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from mailcow_mcp.compose import normalize_message_id
+from mailcow_mcp.compose import default_from_name, normalize_message_id
 from mailcow_mcp.config import Mode
 from mailcow_mcp.contacts import CardDav, ContactsAuthFailed
 from mailcow_mcp.errors import CredentialsRejected
@@ -168,7 +168,9 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
             result = await services.broker_call(mailbox, "aliases")
             services.audit("my_addresses", mailbox=mailbox.username, client=mailbox.client_name)
             addresses = [result["mailbox"], *result["aliases"]]
-            names = {a: n for a in addresses if (n := services.config.from_names.get(a.lower()))}
+            names = {
+                a: n for a in addresses if (n := default_from_name(services.config.from_names, a))
+            }
             return Addresses(
                 mailbox=result["mailbox"], aliases=result["aliases"], display_names=names
             )

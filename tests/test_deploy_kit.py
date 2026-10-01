@@ -161,6 +161,14 @@ def test_apply_writes_config_and_keeps_keys(fake_mailcow: FakeMailcow) -> None:
     # Running again keeps the keys.
     setup(fake_mailcow, "--apply")
     assert (fake_mailcow.kit / "app.env").read_text() == app_env
+    # A setting added later is appended on its own line, even without a final newline.
+    stripped = "\n".join(line for line in app_env.splitlines() if not line.startswith("TIMEZONE="))
+    (fake_mailcow.kit / "app.env").write_text(stripped)  # no trailing newline
+    setup(fake_mailcow, "--apply")
+    lines = (fake_mailcow.kit / "app.env").read_text().splitlines()
+    assert "TIMEZONE=UTC" in lines
+    assert lines[lines.index("TIMEZONE=UTC") - 1] == stripped.splitlines()[-1]
+    (fake_mailcow.kit / "app.env").write_text(app_env)
 
 
 @pytest.fixture(scope="module")

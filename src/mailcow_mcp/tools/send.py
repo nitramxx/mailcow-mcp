@@ -44,6 +44,18 @@ Recipients = Annotated[
 ]
 
 
+FromName = Annotated[
+    str | None,
+    Field(
+        max_length=100,
+        description=(
+            "Set from_name so recipients see a display name; if omitted, the configured default "
+            "for from_address is used."
+        ),
+    ),
+]
+
+
 class SendResult(BaseModel):
     message_id: str = Field(description="Use with find_replies, get_thread and delivery_status.")
     accepted: list[str]
@@ -167,16 +179,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         bcc: Recipients | None = None,
         body_markdown: Annotated[str | None, Field(description="Body in Markdown.")] = None,
         body_text: Annotated[str | None, Field(description="Plain-text body.")] = None,
-        from_name: Annotated[
-            str | None,
-            Field(
-                max_length=100,
-                description=(
-                    "Set from_name so recipients see a display name; if omitted, the "
-                    "configured default for from_address is used."
-                ),
-            ),
-        ] = None,
+        from_name: FromName = None,
         from_address: Annotated[
             str | None,
             Field(
@@ -255,16 +258,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         bcc: Recipients | None = None,
         body_markdown: Annotated[str | None, Field(description="Body in Markdown.")] = None,
         body_text: Annotated[str | None, Field(description="Plain-text body.")] = None,
-        from_name: Annotated[
-            str | None,
-            Field(
-                max_length=100,
-                description=(
-                    "Set from_name so recipients see a display name; if omitted, the "
-                    "configured default for from_address is used."
-                ),
-            ),
-        ] = None,
+        from_name: FromName = None,
         from_address: Annotated[
             str | None, Field(description="One of the mailbox's addresses.")
         ] = None,

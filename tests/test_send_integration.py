@@ -348,3 +348,31 @@ def test_rejected_credentials_sign_the_connection_out(server: Harness) -> None:
     assert server.db.one("SELECT count(*) AS n FROM grants")["n"] == 0  # type: ignore[index]
     with pytest.raises(ToolFailed, match="HTTP 401"):
         session.call("save_draft", to=["bob@example.test"], subject="x", body_text="x")
+
+
+def test_send_draft_reencodes_8bit_drafts(alice: McpSession, mailserver: MailServer) -> None:
+    """A draft written by another client as raw 8bit goes out 7-bit clean."""
+    draft = EmailMessage(policy=default_policy)
+    draft["From"] = "alice@example.test"
+    draft["To"] = "bob@example.test"
+    draft["Subject"] = "8bit draft"
+    draft["Message-ID"] = "<draft-8bit@example.test>"
+    draft.set_content("Příliš žluťoučký kůň", cte="8bit")
+    uid = append(mailserver, ALICE, draft, folder="Drafts")
+    alice.call("send_draft", uid=uid)
+    conn = mailserver.imap(BOB)
+    try:
+        deadline = time.monotonic() + 20
+        while True:
+            conn.select("INBOX", readonly=True)
+            _, data = conn.uid("SEARCH", "HEADER", "Message-ID", "<draft-8bit@example.test>")
+            if data[0] or time.monotonic() > deadline:
+                break
+            time.sleep(0.3)
+        _, fetched = conn.uid("FETCH", data[0].split()[-1], "(BODY.PEEK[])")
+        raw = next(part[1] for part in fetched if isinstance(part, tuple))
+    finally:
+        conn.logout()
+    body = raw.split(b"\r\n\r\n", 1)[1]
+    assert body.isascii()
+    assert parse_message(raw).get_content().strip() == "Příliš žluťoučký kůň"

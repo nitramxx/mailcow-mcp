@@ -7,6 +7,26 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-02
+
+### Fixed
+
+- 0.1.4 regression: replies to messages with long Message-IDs (e.g. Outlook's) had `In-Reply-To`
+  and `References` RFC 2047-encoded, which breaks threading, and long attachment filenames were
+  split into RFC 2231 parts. Messages are now built with a 76-column policy (quoted-printable lines
+  ≤ 76, as RFC 2045 requires; 0.1.4 allowed 78) and sent without refolding headers.
+- `send_draft` re-encodes 8bit drafts (e.g. saved by another client) for 7-bit transport.
+- ASCII text with form feeds or other separators is measured by real line breaks, so long lines
+  get quoted-printable.
+- `TIMEZONE=Europe` (a folder, not a zone) is reported as a configuration error instead of
+  crashing.
+- `FROM_NAMES` accepts `=` in local parts and Unicode domains, reports each error once, and
+  rejects DEL in names; `my_addresses` matches addresses like `send_email` does.
+- An IP as EHLO name is sent as an address literal (`[192.0.2.1]`).
+- `setup-mailcow.sh` no longer glues an added setting onto the last line of an env file that
+  lacks a final newline.
+- `.env.example` leaves `TIMEZONE` empty (the default is the container's zone).
+
 ## [0.1.4] - 2026-10-02
 
 ### Changed
@@ -117,7 +137,8 @@ First release.
   user guide.
 - Multi-arch image (linux/amd64, linux/arm64) on GHCR with SBOM and provenance.
 
-[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.1...v0.1.2

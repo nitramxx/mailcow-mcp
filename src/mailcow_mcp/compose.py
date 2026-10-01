@@ -27,8 +27,13 @@ MAX_BODY_CHARS = 1_000_000
 MAX_SUBJECT_LENGTH = 500
 MAX_NAME_LENGTH = 100
 
-# CRLF, headers folded at 78, quoted-printable wrapped at 76 (RFC 2045).
-POLICY = SMTP
+# Building: content is encoded here, so quoted-printable wraps at 76 (RFC 2045) and nothing is
+# left as 8bit.
+BUILD_POLICY = SMTP.clone(max_line_length=76, cte_type="7bit")
+# Sending: long header lines aren't refolded (folding at 78 would RFC 2047-encode long Message-IDs
+# in In-Reply-To/References and split long filenames into RFC 2231 pieces), and any 8bit part of a
+# stored draft is re-encoded for 7-bit transport.
+POLICY = SMTP.clone(max_line_length=998, cte_type="7bit")
 
 _FORBIDDEN_IN_HEADERS = re.compile(r"[\r\n\x00]")
 _LOCAL_PART_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,64}$")
@@ -260,11 +265,24 @@ def format_date(timezone: tzinfo | None = None) -> str:
     return format_datetime(now)
 
 
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
 def transfer_encoding(text: str) -> str:
-    """7bit for plain ASCII with short lines, else quoted-printable: never raw 8bit."""
-    if text.isascii() and all(len(line) <= 900 for line in text.splitlines()):
+    """7bit for plain ASCII with short lines, else quoted-printable: never raw 8bit.
+
+    Lines are split only at CR/LF, as on the wire (str.splitlines would also split at form
+    feeds and other separators that don't end an SMTP line).
+    """
+    if text.isascii() and all(len(line) <= 900 for line in _LINE_BREAK.split(text)):
         return "7bit"
     return "quoted-printable"
+
+
+def default_from_name(from_names: Mapping[str, str], address: str) -> str:
+    """The configured display name for an address (matched like compose normalizes it)."""
+    normalized = normalize_address(address)
+    return from_names.get(normalized.lower(), "") if normalized else ""
 
 
 def new_message_id(domain: str) -> str:
@@ -311,7 +329,7 @@ def compose(
     if len(draft.attachments) > MAX_ATTACHMENTS:
         raise LimitExceeded(f"At most {MAX_ATTACHMENTS} attachments per message.")
 
-    message = EmailMessage(policy=POLICY)
+    message = EmailMessage(policy=BUILD_POLICY)
     message["From"] = Address(display_name=from_name, addr_spec=sender)
     if to:
         message["To"] = to

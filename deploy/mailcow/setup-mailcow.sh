@@ -348,6 +348,10 @@ add_missing() {  # add_missing file KEY value: append KEY if an existing file la
     local file="$1" key="$2" value="$3"
     if [ -f "$file" ] && ! grep -qE "^$key=" "$file"; then
         if [ "$APPLY" = 1 ]; then
+            # An editor may have dropped the final newline: don't glue onto the last value.
+            if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
+                printf '\n' >>"$file"
+            fi
             printf '%s=%s\n' "$key" "$value" >>"$file"
             note "added          $key ($file)"
         else
