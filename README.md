@@ -6,8 +6,8 @@ mailcow account. An AI agent can then **send, draft, read and follow up on email
 (including PDFs rendered on the server), reply tracking, rescuing replies from spam and
 quarantine, delivery status and contacts.
 
-> **Status: pre-release.** Feature-complete and tested against a real Dovecot/Postfix and a mock
-> of mailcow's API; the first tagged release and a real-world deployment test are next.
+> **Status: 0.1.0, first release.** Tested against a real Dovecot/Postfix and a mock
+> of mailcow's API; a first real-world deployment is still to come, so treat it as early.
 
 > This is a community project. It is not affiliated with or endorsed by the mailcow team or
 > The Infrastructure Company GmbH.

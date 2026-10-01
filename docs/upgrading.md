@@ -32,6 +32,6 @@ README.
 
 ## Version notes
 
-### Unreleased → first release
+### 0.1.0
 
 First release; nothing to migrate.
