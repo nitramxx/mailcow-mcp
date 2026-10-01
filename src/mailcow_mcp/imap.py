@@ -164,7 +164,71 @@ class ImapSession:
         self._selected = (folder, readonly)
         return result
 
+    def status(self, folder: str) -> tuple[int, int]:
+        """(messages, unseen) without selecting the folder."""
+        data = self.client.folder_status(folder, [b"MESSAGES", b"UNSEEN"])
+        return int(data.get(b"MESSAGES", 0)), int(data.get(b"UNSEEN", 0))
+
     # --- messages ------------------------------------------------------------
+
+    def search(self, folder: str, criteria: list[Any]) -> list[int]:
+        self.select(folder)
+        uids: list[int] = self.client.search(criteria or ["ALL"], charset="UTF-8")
+        return sorted(uids)
+
+    def summaries(
+        self, folder: str, uids: Sequence[int], header_names: Sequence[str]
+    ) -> dict[int, tuple[bytes, tuple[bytes, ...], int, Any]]:
+        """Headers, flags, size and internal date of messages (without setting \\Seen)."""
+        if not uids:
+            return {}
+        self.select(folder)
+        item = f"BODY.PEEK[HEADER.FIELDS ({' '.join(n.upper() for n in header_names)})]".encode()
+        data = self.client.fetch(list(uids), [item, b"FLAGS", b"RFC822.SIZE", b"INTERNALDATE"])
+        result = {}
+        for uid, fields in data.items():
+            headers = next(
+                (
+                    v
+                    for k, v in fields.items()
+                    if isinstance(k, bytes) and k.startswith(b"BODY[HEADER")
+                ),
+                b"",
+            )
+            result[uid] = (
+                headers or b"",
+                tuple(fields.get(b"FLAGS", ())),
+                int(fields.get(b"RFC822.SIZE", 0)),
+                fields.get(b"INTERNALDATE"),
+            )
+        return result
+
+    def existing(self, folder: str, uids: Sequence[int]) -> list[int]:
+        self.select(folder)
+        found = self.client.fetch(list(uids), [b"UID"]) if uids else {}
+        return sorted(uid for uid in uids if uid in found)
+
+    def set_flags(
+        self, folder: str, uids: Sequence[int], add: list[bytes], remove: list[bytes]
+    ) -> None:
+        self.select(folder, readonly=False)
+        if add:
+            self.client.add_flags(list(uids), add, silent=True)
+        if remove:
+            self.client.remove_flags(list(uids), remove, silent=True)
+
+    def move(self, folder: str, uids: Sequence[int], destination: str) -> None:
+        """Move messages (MOVE, or COPY + expunge of exactly those UIDs)."""
+        self.select(folder, readonly=False)
+        if self.client.has_capability("MOVE"):
+            self.client.move(list(uids), destination)
+            return
+        self.client.copy(list(uids), destination)
+        self.client.add_flags(list(uids), [DELETED], silent=True)
+        if self.client.has_capability("UIDPLUS"):
+            self.client.uid_expunge(list(uids))
+        else:
+            self.client.expunge()
 
     def append(self, folder: str, message: bytes, flags: Iterable[bytes]) -> int | None:
         """Store a message; returns its UID when the server reports it (UIDPLUS)."""

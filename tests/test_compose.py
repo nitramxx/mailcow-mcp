@@ -187,7 +187,7 @@ class TestRendering:
         html = markdown_to_html(
             "[x](javascript:alert(1)) [y](https://ok.example) <script>bad()</script>\n\n![i](https://t.example/p.png)"
         )
-        assert "href=\"javascript:" not in html
+        assert 'href="javascript:' not in html
         assert 'href="https://ok.example"' in html
         assert 'rel="noopener noreferrer"' in html
         assert "<script>" not in html

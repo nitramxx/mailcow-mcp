@@ -9,6 +9,17 @@ versions and are described in `docs/upgrading.md`.
 
 ### Added
 
+- Reading and follow-up (phase 3): `list_folders`, `list_messages`, `search_messages`,
+  `read_message`, `get_attachment`, `find_replies`, `get_thread`, `mark_messages`,
+  `move_messages`. Reads never set `\Seen`. HTML-only messages are converted to text.
+- `get_attachment` returns the text of PDF, DOCX and text files, images as image content,
+  otherwise metadata (up to 5 MB, 50,000 characters).
+- `find_replies` searches INBOX and Junk by In-Reply-To/References and says where each reply was
+  found; `get_thread` collects ancestors and replies across INBOX, Sent, Junk and Archive.
+- Spam rescue: `list_spam` (Junk with spam scores) and `rescue_from_junk`.
+- All message content returned to the model is wrapped as untrusted, in a tag with a random
+  suffix the content can't close; Junk content is flagged as likely spam or phishing.
+
 - Sending and drafts (phase 2): `send_email`, `save_draft`, `send_draft`, `delete_draft`.
   Markdown bodies are sent as sanitized HTML with a plain-text alternative. Replies get
   `In-Reply-To` and `References` (taken from the original when it's in the mailbox). Bcc is kept

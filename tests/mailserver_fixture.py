@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import imaplib
 import shutil
+import smtplib
 import ssl
 import subprocess
 import time
@@ -128,6 +129,18 @@ def _make_certificates(directory: Path) -> Path:
     for path in directory.iterdir():
         path.chmod(0o644)
     return directory / "ca.crt"
+
+
+def _smtp_ready(port: int, ca_file: Path, *, implicit_tls: bool) -> None:
+    context = ssl.create_default_context(cafile=str(ca_file))
+    context.check_hostname = False
+    if implicit_tls:
+        with smtplib.SMTP_SSL("127.0.0.1", port, timeout=5, context=context) as smtp:
+            smtp.noop()
+    else:
+        with smtplib.SMTP("127.0.0.1", port, timeout=5) as smtp:
+            smtp.starttls(context=context)
+            smtp.noop()
 
 
 def _docker_available() -> bool:
