@@ -172,46 +172,46 @@ else
     check 2 unknown "can't read $CERT"
 fi
 
-# 3. OAuth2 app (and its credentials, if not given)
+# 4. OAuth2 app (and its credentials, if not given)
 REDIRECT_URI="https://$MCP_HOSTNAME/oauth/mailcow/callback"
 if oauth_row="$(sql "SELECT client_id, client_secret FROM oauth_clients WHERE CONCAT(' ', redirect_uri, ' ') LIKE '% $REDIRECT_URI %' ORDER BY id DESC LIMIT 1")"; then
     if [ -n "$oauth_row" ]; then
-        check 3 ok "OAuth2 client $(cut -f1 <<<"$oauth_row") has the redirect URI"
+        check 4 ok "OAuth2 client $(cut -f1 <<<"$oauth_row") has the redirect URI"
         [ -n "$OAUTH_CLIENT_ID" ] || OAUTH_CLIENT_ID="$(cut -f1 <<<"$oauth_row")"
         [ -n "$OAUTH_CLIENT_SECRET" ] || OAUTH_CLIENT_SECRET="$(cut -f2 <<<"$oauth_row")"
     else
-        check 3 todo "no OAuth2 client with redirect URI $REDIRECT_URI"
+        check 4 todo "no OAuth2 client with redirect URI $REDIRECT_URI"
     fi
 else
-    check 3 unknown "can't read mailcow's database (is mysql-mailcow running?)"
+    check 4 unknown "can't read mailcow's database (is mysql-mailcow running?)"
 fi
 
-# 4. API key (and the key itself, if not given)
+# 5. API key (and the key itself, if not given)
 if api_row="$(sql "SELECT api_key, skip_ip_check, allow_from FROM api WHERE access = 'rw' AND active = 1 LIMIT 1")"; then
     if [ -z "$api_row" ]; then
-        check 4 todo "the read-write API key isn't active"
+        check 5 todo "the read-write API key isn't active"
     else
         allow_from="$(cut -f3- <<<"$api_row")"
         if [ "$(cut -f2 <<<"$api_row")" = 1 ] || ip_in "$BROKER_IP" "$allow_from"; then
-            check 4 ok "read-write API key active, $BROKER_IP allowed"
+            check 5 ok "read-write API key active, $BROKER_IP allowed"
             [ -n "$API_KEY" ] || API_KEY="$(cut -f1 <<<"$api_row")"
         else
-            check 4 todo "read-write API key active, but $BROKER_IP isn't in \"Allow API access from\""
+            check 5 todo "read-write API key active, but $BROKER_IP isn't in \"Allow API access from\""
         fi
     fi
 else
-    check 4 unknown "can't read mailcow's database"
+    check 5 unknown "can't read mailcow's database"
 fi
 
-# 5. Fail2ban allowlist
+# 6. Fail2ban allowlist
 if allowlist="$(redis HKEYS F2B_WHITELIST)"; then
     if ip_in "$APP_IP" "$allowlist"; then
-        check 5 ok "$APP_IP is allowlisted"
+        check 6 ok "$APP_IP is allowlisted"
     else
-        check 5 todo "$APP_IP isn't allowlisted"
+        check 6 todo "$APP_IP isn't allowlisted"
     fi
 else
-    check 5 unknown "can't read mailcow's Redis"
+    check 6 unknown "can't read mailcow's Redis"
 fi
 
 # --- secrets and files ----------------------------------------------------------
@@ -322,7 +322,7 @@ else
     note "would write    $SITE_FILE"
 fi
 
-# 6. Credentials in the env files
+# 7. Credentials in the env files
 missing_env=""
 oauth_id_set=0; grep -qE '^MAILCOW_OAUTH_CLIENT_ID=.+' "$KIT_DIR/app.env" 2>/dev/null && oauth_id_set=1
 [ -n "$OAUTH_CLIENT_ID" ] && oauth_id_set=1
@@ -331,32 +331,32 @@ api_key_set=0; grep -qE '^MAILCOW_API_KEY=.+' "$KIT_DIR/broker.env" 2>/dev/null 
 [ "$oauth_id_set" = 1 ] || missing_env="$missing_env MAILCOW_OAUTH_CLIENT_ID/_SECRET (app.env)"
 [ "$api_key_set" = 1 ] || missing_env="$missing_env MAILCOW_API_KEY (broker.env)"
 if [ -z "$missing_env" ]; then
-    check 6 ok "OAuth2 client and API key are set"
+    check 7 ok "OAuth2 client and API key are set"
 else
-    check 6 todo "missing:$missing_env"
+    check 7 todo "missing:$missing_env"
 fi
 
-# 7. Running
+# 9. Running
 running=""
 if [ -f "$KIT_DIR/.env" ]; then
     running="$(docker compose --project-directory "$KIT_DIR" ps --format '{{.Service}}={{.Health}}' 2>/dev/null)" || running=""
 fi
 if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$running"; then
     if curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" >/dev/null 2>&1; then
-        check 7 ok "app and broker healthy; https://$MCP_HOSTNAME/healthz answers through mailcow's nginx"
+        check 9 ok "app and broker healthy; https://$MCP_HOSTNAME/healthz answers through mailcow's nginx"
     else
-        check 7 todo "app and broker healthy, but mailcow's nginx doesn't route $MCP_HOSTNAME yet"
+        check 9 todo "app and broker healthy, but mailcow's nginx doesn't route $MCP_HOSTNAME yet"
     fi
 elif [ -n "$running" ]; then
-    check 7 todo "containers: $(echo "$running" | tr '\n' ' ')"
+    check 9 todo "containers: $(echo "$running" | tr '\n' ' ')"
 else
-    check 7 todo "not started"
+    check 9 todo "not started"
 fi
 
 # --- report ---------------------------------------------------------------------
 echo
 echo "checks"
-for step in 1 2 3 4 5 6 7; do
+for step in 1 2 4 5 6 7 9; do  # the guide's step numbers
     case "${STATUS[$step]}" in
         ok) mark="✓" ;; todo) mark="✗" ;; *) mark="?" ;;
     esac
@@ -383,29 +383,29 @@ EOF
 EOF
     fi
 fi
-if todo 3; then
-    cat <<EOF
- 3. mailcow UI → System → Configuration → Access → OAuth2 Apps → add a client with redirect URI
-        $REDIRECT_URI
-EOF
-fi
 if todo 4; then
     cat <<EOF
- 4. mailcow UI → System → Configuration → Access → Administrators → API: activate the
-    read-write key and add to "Allow API access from":  $BROKER_IP
-    (keep any addresses already there: mailcow has only one read-write key)
+ 4. mailcow UI → System → Configuration → Access → OAuth2 Apps → add a client with redirect URI
+        $REDIRECT_URI
 EOF
 fi
 if todo 5; then
     cat <<EOF
- 5. mailcow UI → System → Configuration → Options → Fail2ban parameters → allowlist:  $APP_IP
-    (every user's IMAP/SMTP login comes from this address)
+ 5. mailcow UI → System → Configuration → Access → Administrators → API: activate the
+    read-write key and add to "Allow API access from":  $BROKER_IP
+    (keep any addresses already there: mailcow has only one read-write key)
 EOF
 fi
 if todo 6; then
-    echo " 6. Run this again after steps 3 and 4 (it reads the values from mailcow), or fill in:$missing_env"
+    cat <<EOF
+ 6. mailcow UI → System → Configuration → Options → Fail2ban parameters → allowlist:  $APP_IP
+    (every user's IMAP/SMTP login comes from this address)
+EOF
 fi
 if todo 7; then
+    echo " 7. Run this again after steps 4 and 5 (it reads the values from mailcow), or fill in:$missing_env"
+fi
+if todo 9; then
     cat <<EOF
  7. Start:  cd $KIT_DIR && docker compose up -d
     Then:   cd $MAILCOW_DIR && docker compose restart nginx-mailcow

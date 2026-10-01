@@ -396,7 +396,7 @@ def test_setup_checks_mailcow_state(tmp_path: Path, image: str) -> None:
             "--apply",
             env=compose,
         ).stdout
-        for step in ("2", "3", "4", "5", "6"):
+        for step in ("2", "4", "5", "6", "7"):
             assert f"✓ {step}." in out, out
         assert "OAuth2 Apps" not in out and "Fail2ban parameters" not in out
         app_env = (kit / "app.env").read_text()
