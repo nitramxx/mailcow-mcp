@@ -242,7 +242,9 @@ write_file() {  # path mode content
 }
 fill_empty() {  # fill_empty file KEY value: set KEY only if it's empty in an existing file
     local file="$1" key="$2" value="$3"
-    [ -f "$file" ] && [ -n "$value" ] && grep -qE "^$key=$" "$file" || return 0
+    if ! { [ -f "$file" ] && [ -n "$value" ] && grep -qE "^$key=$" "$file"; }; then
+        return 0
+    fi
     if [ "$APPLY" = 1 ]; then
         local tmp; tmp="$(mktemp "$file.XXXXXX")"
         awk -v k="$key" -v v="$value" 'BEGIN { FS = OFS = "=" } $1 == k && $2 == "" { print k "=" v; next } { print }' "$file" >"$tmp"
@@ -324,7 +326,9 @@ fi
 
 # 7. Running
 running=""
-[ -f "$KIT_DIR/.env" ] && running="$(cd "$KIT_DIR" && docker compose ps --format '{{.Service}}={{.Health}}' 2>/dev/null || true)"
+if [ -f "$KIT_DIR/.env" ]; then
+    running="$(cd "$KIT_DIR" && docker compose ps --format '{{.Service}}={{.Health}}' 2>/dev/null || true)"
+fi
 if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$running"; then
     if curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" >/dev/null 2>&1; then
         check 7 ok "app and broker healthy; https://$MCP_HOSTNAME/healthz answers through mailcow's nginx"
