@@ -37,9 +37,19 @@ Database migrations run automatically on start. Downgrading to a version with an
 schema isn't supported: back up the volumes first if you might want to go back
 (`docker run --rm -v mailcow-mcp_app-data:/data -v "$PWD":/backup alpine tar czf /backup/app-data.tgz -C /data .`).
 
-mailcow's own `update.sh` doesn't touch mailcow-mcp. After a mailcow update, check that
-`https://mcp.example.com/healthz` still answers; the supported mailcow versions are listed in the
-README.
+## mailcow updates
+
+mailcow's `update.sh` doesn't change mailcow-mcp's files, but mailcow-mcp's containers are attached
+to mailcow's Docker network, and an update may need to remove or recreate that network (for
+example when it changes IPv6 settings). Stop mailcow-mcp first:
+
+```sh
+cd /opt/mailcow-mcp && docker compose stop
+cd /opt/mailcow-dockerized && sudo ./update.sh
+cd /opt/mailcow-mcp && docker compose start && sudo ./setup-mailcow.sh   # checks; step 9 ✓
+```
+
+The supported mailcow versions are listed in the README.
 
 ## Version notes
 

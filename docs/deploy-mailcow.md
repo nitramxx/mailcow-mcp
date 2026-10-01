@@ -218,6 +218,12 @@ It downloads that release's kit, verifies its checksum, shows what changed in th
 files, replaces only the kit files (never `.env`, `app.env`, `broker.env`), pins the image to that
 version, restarts, and runs the checks. See [upgrading.md](upgrading.md).
 
+### mailcow updates
+
+Stop mailcow-mcp while mailcow's `update.sh` runs (its containers are attached to mailcow's
+network): `docker compose stop` here, then `update.sh`, then `docker compose start`. See
+[upgrading.md](upgrading.md#mailcow-updates).
+
 ## Uninstall
 
 ```sh
