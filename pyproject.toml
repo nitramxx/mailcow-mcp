@@ -71,5 +71,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = ["integration: needs Docker (real Dovecot + Postfix test server)"]
+markers = [
+    "integration: needs Docker (real Dovecot + Postfix test server)",
+    "kit: deployment kit tests (Docker; builds the image)",
+]
 filterwarnings = ["ignore::DeprecationWarning:radicale.*"]

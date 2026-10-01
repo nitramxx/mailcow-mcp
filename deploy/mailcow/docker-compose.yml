@@ -1,0 +1,84 @@
+# mailcow-mcp next to mailcow. A separate compose project (e.g. /opt/mailcow-mcp): mailcow's own
+# compose files are never touched, so mailcow's update.sh is unaffected.
+#
+# Generated settings live in .env (compose variables), app.env and broker.env; create them with
+# setup-mailcow.sh. See docs/deploy-mailcow.md.
+
+name: mailcow-mcp
+
+x-hardening: &hardening
+  image: ghcr.io/nitramxx/mailcow-mcp:${MCP_VERSION:-latest}
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  user: "10001:10001"
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  app:
+    <<: *hardening
+    command: ["serve"]
+    env_file: app.env
+    volumes:
+      - app-data:/data
+    healthcheck:
+      test: ["CMD", "mailcow-mcp", "healthcheck", "--port", "8090"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      mailcow:
+        # Fixed: mailcow's Fail2ban whitelist names this address.
+        ipv4_address: ${APP_IP}
+        aliases:
+          - mailcow-mcp
+      internal: {}
+
+  broker:
+    <<: *hardening
+    command: ["broker"]
+    env_file: broker.env
+    environment:
+      # Listen only on the internal network: nothing on mailcow's network can reach it.
+      HOST: ${BROKER_INTERNAL_IP:-172.31.253.11}
+    volumes:
+      - broker-data:/data
+    healthcheck:
+      test: ["CMD", "mailcow-mcp", "healthcheck", "--port", "8091"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      mailcow:
+        # Fixed: mailcow's "Allow API access from" names this address.
+        ipv4_address: ${BROKER_IP}
+      internal:
+        ipv4_address: ${BROKER_INTERNAL_IP:-172.31.253.11}
+        aliases:
+          - broker
+
+volumes:
+  app-data:
+  broker-data:
+
+networks:
+  mailcow:
+    external: true
+    name: ${MAILCOW_NETWORK:-mailcowdockerized_mailcow-network}
+  internal:
+    # Only app and broker; no route out.
+    internal: true
+    ipam:
+      config:
+        - subnet: ${INTERNAL_SUBNET:-172.31.253.0/24}

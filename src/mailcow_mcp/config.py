@@ -71,6 +71,8 @@ class AppConfig:
     mode: Mode
     public_url: str
     mailcow_url: str | None
+    # Inside mailcow's network: reach nginx directly (no hairpin NAT), verify TLS_SERVER_NAME.
+    mailcow_internal_url: str | None
     mailcow_oauth_client_id: str | None
     mailcow_oauth_client_secret: str | None = field(repr=False)
     broker_url: str
@@ -82,6 +84,7 @@ class AppConfig:
     smtp_port: int
     smtp_security: Security
     carddav_url: str | None
+    carddav_internal: bool  # carddav_url points at MAILCOW_INTERNAL_URL
     # None (generic mode only): verify each server against the host connected to.
     tls_server_name: str | None
     tls_verify: bool
@@ -98,6 +101,7 @@ class AppConfig:
     default_language: str
     data_dir: Path
     port: int
+    host: str
     # Folder names to try after SPECIAL-USE flags, before the common names.
     folder_names: dict[str, str] = field(default_factory=dict)
 
@@ -114,6 +118,7 @@ class BrokerConfig:
     broker_signing_key: str = field(repr=False)
     data_dir: Path
     port: int
+    host: str
 
 
 class _Reader:
@@ -261,6 +266,17 @@ class _Reader:
             return ""
         return value
 
+    def address(self, name: str) -> str:
+        """An IP address to listen on (default: all interfaces)."""
+        value = self.raw(name)
+        if value is None:
+            return "0.0.0.0"  # noqa: S104 - containers listen on their own networks
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            self.error(name, f"must be an IP address (got {value!r})")
+            return "0.0.0.0"  # noqa: S104
+
     def networks(self, name: str) -> tuple[str, ...]:
         value = self.required(name, "the mailcow network CIDR, e.g. 172.22.1.0/24")
         result: list[str] = []
@@ -337,6 +353,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
     )
 
     mailcow_url: str | None = None
+    mailcow_internal_url: str | None = None
     client_id: str | None = None
     client_secret: str | None = None
     shared_secret: str | None = None
@@ -344,6 +361,9 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         mailcow_url = r.url(
             "MAILCOW_URL",
             r.required("MAILCOW_URL", "public mailcow URL, e.g. https://mail.example.com"),
+        )
+        mailcow_internal_url = (
+            r.url("MAILCOW_INTERNAL_URL", r.raw("MAILCOW_INTERNAL_URL"), allow_path=False) or None
         )
         client_id = r.required("MAILCOW_OAUTH_CLIENT_ID", "from mailcow → OAuth2 Apps")
         client_secret = r.required("MAILCOW_OAUTH_CLIENT_SECRET", "from mailcow → OAuth2 Apps")
@@ -361,8 +381,10 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
     smtp_security = r.choice("SMTP_SECURITY", Security, Security.STARTTLS)
 
     carddav_raw = r.raw("CARDDAV_URL")
-    if carddav_raw is None and mailcow and mailcow_url:
-        carddav_raw = f"{mailcow_url}/SOGo/dav/"
+    carddav_internal = False
+    if carddav_raw is None and mailcow and (mailcow_internal_url or mailcow_url):
+        carddav_raw = f"{mailcow_internal_url or mailcow_url}/SOGo/dav/"
+        carddav_internal = mailcow_internal_url is not None
     carddav_url = r.url("CARDDAV_URL", carddav_raw, allow_path=True) or None
 
     tls_server_name: str | None
@@ -393,6 +415,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         mode=mode,
         public_url=public_url,
         mailcow_url=mailcow_url,
+        mailcow_internal_url=mailcow_internal_url,
         mailcow_oauth_client_id=client_id,
         mailcow_oauth_client_secret=client_secret,
         broker_url=broker_url,
@@ -404,6 +427,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         smtp_port=smtp_port,
         smtp_security=smtp_security,
         carddav_url=carddav_url,
+        carddav_internal=carddav_internal,
         tls_server_name=tls_server_name,
         tls_verify=tls_verify,
         tls_ca_file=r.file("TLS_CA_FILE"),
@@ -419,6 +443,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         default_language=language,
         data_dir=Path(r.raw("DATA_DIR") or "/data"),
         port=r.port("PORT", DEFAULT_APP_PORT),
+        host=r.address("HOST"),
         folder_names=r.folders(),
     )
     r.raise_if_errors(f"app configuration (MODE={mode.value})")
@@ -451,6 +476,7 @@ def load_broker_config(env: Mapping[str, str] | None = None) -> BrokerConfig:
         broker_signing_key=r.key("BROKER_SIGNING_KEY"),
         data_dir=Path(r.raw("DATA_DIR") or "/data"),
         port=r.port("PORT", DEFAULT_BROKER_PORT),
+        host=r.address("HOST"),
     )
     r.raise_if_errors("broker configuration")
     return config

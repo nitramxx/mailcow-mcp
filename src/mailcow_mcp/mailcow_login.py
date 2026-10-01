@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import ssl
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
@@ -43,10 +43,18 @@ class MailcowOAuth:
         self.client_id = config.mailcow_oauth_client_id
         self.client_secret = config.mailcow_oauth_client_secret or ""
         self.redirect_uri = config.public_url + CALLBACK_PATH
+        # The browser goes to the public URL; our token request may go to nginx directly.
+        self.token_base = config.mailcow_internal_url or config.mailcow_url
+        headers = {}
+        if config.mailcow_internal_url:
+            headers["Host"] = urlsplit(config.mailcow_url).netloc
         context = verify or client_context(
-            server_name=None, verify=config.tls_verify, ca_file=config.tls_ca_file
+            server_name=config.tls_server_name if config.mailcow_internal_url else None,
+            verify=config.tls_verify,
+            ca_file=config.tls_ca_file,
         )
         self._http = httpx.AsyncClient(
+            headers=headers,
             verify=context,
             timeout=httpx.Timeout(20.0, connect=10.0),
             transport=transport,
@@ -72,7 +80,7 @@ class MailcowOAuth:
         """Authorization code → mailcow access token."""
         try:
             response = await self._http.post(
-                f"{self.base_url}/oauth/token",
+                f"{self.token_base}/oauth/token",
                 data={
                     "grant_type": "authorization_code",
                     "code": code,

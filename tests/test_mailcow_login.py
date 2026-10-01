@@ -89,6 +89,24 @@ def test_consent_page_offers_mailcow(app: Harness, running_mailcow: RunningMailc
     assert running_mailcow.url in page.headers["content-security-policy"]
 
 
+def test_internal_url_for_the_token_exchange(
+    running_mailcow: RunningMailcow, mailcow: MockMailcow, certs: Path, broker: BrokerSetup
+) -> None:
+    # The browser uses the public URL; the app talks to nginx directly (no hairpin NAT).
+    public = "https://mail.example.test"
+    for app in make_mailcow_harness(
+        running_mailcow, certs, broker, MAILCOW_URL=public, MAILCOW_INTERNAL_URL=running_mailcow.url
+    ):
+        _, url, _ = start(app)
+        assert url.startswith(f"{public}/oauth/authorize?")
+        back = at_mailcow(running_mailcow.url + url.removeprefix(public), certs)
+        response = app.client.get(
+            back.headers["location"].removeprefix(BASE_URL), follow_redirects=False
+        )
+        assert response.status_code == 303, response.text
+    assert mailcow.app_passwords
+
+
 def test_redirect_to_mailcow(app: Harness, running_mailcow: RunningMailcow) -> None:
     _, url, _ = start(app)
     assert url.startswith(f"{running_mailcow.url}/oauth/authorize?")

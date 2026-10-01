@@ -64,7 +64,7 @@ def _check_data_dir(path: Path) -> str | None:
 def app_server_options(config: AppConfig) -> dict[str, Any]:
     """uvicorn settings for the app: the real client IP only from TRUSTED_PROXIES."""
     return {
-        "host": "0.0.0.0",  # noqa: S104 - runs in a container; nginx is the only route in
+        "host": config.host,
         "port": config.port,
         "proxy_headers": True,
         "forwarded_allow_ips": list(config.trusted_proxies),
@@ -101,7 +101,7 @@ def cmd_broker(args: argparse.Namespace) -> int:
     log.info("starting broker %s on port %d", __version__, config.port)
     uvicorn.run(
         create_broker_app(config),
-        host="0.0.0.0",  # noqa: S104 - internal network only, never published
+        host=config.host,  # set to its internal-network IP by the compose file
         port=config.port,
         proxy_headers=False,
         server_header=False,
@@ -269,9 +269,13 @@ def cmd_healthcheck(args: argparse.Namespace) -> int:
     else:
         # The same image runs either role; only one of them listens here.
         ports = [DEFAULT_APP_PORT, DEFAULT_BROKER_PORT]
+    host = os.environ.get("HOST", "").strip()
+    host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host  # noqa: S104
+    if ":" in host:
+        host = f"[{host}]"
     for port in ports:
         try:
-            url = f"http://127.0.0.1:{port}/healthz"
+            url = f"http://{host}:{port}/healthz"
             with urllib.request.urlopen(url, timeout=3) as response:
                 if response.status == 200:
                     return 0

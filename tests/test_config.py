@@ -76,6 +76,8 @@ class TestAppMailcowMode:
             Security.STARTTLS,
         )
         assert c.carddav_url == "https://mail.example.com/SOGo/dav"
+        assert c.carddav_internal is False
+        assert c.mailcow_internal_url is None
         assert c.tls_verify is True
         assert c.allow_password_login is False
         assert c.allowed_domains == ()
@@ -104,6 +106,12 @@ class TestAppMailcowMode:
         # one line per variable, no follow-up noise
         assert len(exc.value.errors) == 8
         assert "generate-key" in str(exc.value)
+
+    def test_internal_url(self) -> None:
+        c = load_app_config(mailcow_env(MAILCOW_INTERNAL_URL="https://nginx-mailcow"))
+        assert c.mailcow_internal_url == "https://nginx-mailcow"
+        assert c.carddav_url == "https://nginx-mailcow/SOGo/dav"
+        assert c.carddav_internal is True
 
     def test_empty_values_count_as_missing(self) -> None:
         with pytest.raises(ConfigError) as exc:

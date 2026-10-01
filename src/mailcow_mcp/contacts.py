@@ -130,15 +130,18 @@ class CardDav:
         url: str,
         *,
         verify: ssl.SSLContext | bool = True,
+        host_header: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.url = url.rstrip("/") + "/"
         self.verify = verify
+        self.headers = {"Host": host_header} if host_header else {}
         self.transport = transport
 
     async def search(self, username: str, password: str, query: str) -> list[Contact]:
         async with httpx.AsyncClient(
             auth=(username, password),
+            headers=self.headers,
             verify=self.verify,
             timeout=httpx.Timeout(20.0, connect=10.0),
             transport=self.transport,
