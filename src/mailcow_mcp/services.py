@@ -15,8 +15,9 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mailcow_mcp.audit import AuditLog
-from mailcow_mcp.broker_client import BrokerClient
+from mailcow_mcp.broker_client import BrokerClient, RevokedCapability
 from mailcow_mcp.config import AppConfig
+from mailcow_mcp.contacts import CardDav
 from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
 from mailcow_mcp.errors import CredentialsRejected, LimitExceeded, MailError
@@ -84,6 +85,7 @@ class Services:
         imap: ImapConnector | None = None,
         smtp: SmtpSender | None = None,
         broker: BrokerClient | None = None,
+        carddav: CardDav | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config
@@ -94,6 +96,7 @@ class Services:
         self.imap = imap or ImapConnector(config)
         self.smtp = smtp or SmtpSender(config)
         self.broker = broker
+        self.carddav = carddav
         self.send_limits = SendLimits(db, config.send_limit_hour, config.send_limit_day, clock)
         self.max_message_bytes = config.max_message_mb * 1024 * 1024
 
@@ -126,6 +129,16 @@ class Services:
             client_name=row["client_name"],
         )
 
+    async def broker_call(self, mailbox: Mailbox, operation: str, **body: Any) -> dict[str, Any]:
+        """A broker operation for this mailbox (mailcow sign-in connections only)."""
+        capability = self.provider.capability_of(mailbox.grant_id)
+        if self.broker is None or capability is None:
+            raise MailError(
+                "This needs a connection made with 'Sign in with mailcow' (this one signed in "
+                "with a password)."
+            )
+        return await self.broker.call(operation, capability=capability, **body)
+
     @asynccontextmanager
     async def tool(self, ctx: Context[Any, Any] | None, name: str) -> AsyncIterator[Mailbox]:
         """Resolve the mailbox; turn mail errors into tool errors, audited.
@@ -135,8 +148,10 @@ class Services:
         mailbox = self.mailbox_for(ctx)
         try:
             yield mailbox
-        except CredentialsRejected as exc:
+        except (CredentialsRejected, RevokedCapability) as exc:
             self.provider.revoke_grant(mailbox.grant_id, reason="credentials_rejected")
+            if isinstance(exc, RevokedCapability):
+                raise ToolError(SIGNED_OUT) from exc
             self.audit(
                 name,
                 result="credentials_rejected",

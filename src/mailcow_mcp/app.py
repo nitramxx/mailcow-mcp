@@ -29,6 +29,7 @@ from mailcow_mcp import __version__
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.broker_client import BrokerClient
 from mailcow_mcp.config import AppConfig, Mode
+from mailcow_mcp.contacts import CardDav
 from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
 from mailcow_mcp.imap import ImapPasswordVerifier, PasswordVerifier
@@ -229,6 +230,7 @@ def create_app(
     verifier: PasswordVerifier | None = None,
     broker: BrokerClient | None = None,
     mailcow_oauth: MailcowOAuth | None = None,
+    carddav: CardDav | None = None,
     clock: Callable[[], float] = time.time,
 ) -> App:
     if config.mode is Mode.MAILCOW:
@@ -278,7 +280,9 @@ def create_app(
             }
         ),
     )
-    services = Services(config, db, box, provider, audit, broker=broker, clock=clock)
+    services = Services(
+        config, db, box, provider, audit, broker=broker, carddav=carddav, clock=clock
+    )
     register_tools(mcp, services)
     mcp_app = mcp.streamable_http_app(
         streamable_http_path=MCP_PATH,

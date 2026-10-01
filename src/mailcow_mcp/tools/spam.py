@@ -9,8 +9,10 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from mailcow_mcp.errors import NotFound
+from mailcow_mcp.config import Mode
+from mailcow_mcp.errors import MailError, NotFound
 from mailcow_mcp.imap import ImapSession
+from mailcow_mcp.messages import iso_timestamp
 from mailcow_mcp.services import Services
 from mailcow_mcp.tools.read import READ_ONLY, Moved, _summaries, training_note
 from mailcow_mcp.untrusted import LISTING_NOTICE, SPAM_NOTICE
@@ -32,6 +34,7 @@ class SpamItem(BaseModel):
 class SpamList(BaseModel):
     junk_folder: str | None
     items: list[SpamItem]
+    note: str | None = None
     notice: str = LISTING_NOTICE + SPAM_NOTICE
 
 
@@ -75,10 +78,29 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     return junk_items(session, limit)
 
             junk, items = await anyio.to_thread.run_sync(work)
+            note = None
+            if services.config.mode is Mode.MAILCOW:
+                try:
+                    quarantined = (await services.broker_call(mailbox, "quarantine_list"))["items"]
+                except MailError as exc:
+                    note = f"Quarantine not included: {exc}"
+                    quarantined = []
+                items += [
+                    SpamItem(
+                        location="quarantine",
+                        quarantine_id=q["id"],
+                        sender=q["sender"],
+                        subject=q["subject"],
+                        date=q["created"],
+                        spam_score=q.get("score"),
+                    )
+                    for q in quarantined[:limit]
+                ]
+                items.sort(key=lambda i: iso_timestamp(i.date), reverse=True)
             services.audit(
                 "list_spam", mailbox=mailbox.username, client=mailbox.client_name, count=len(items)
             )
-            return SpamList(junk_folder=junk, items=items)
+            return SpamList(junk_folder=junk, items=items, note=note)
 
     @mcp.tool(
         name="rescue_from_junk",

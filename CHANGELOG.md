@@ -9,6 +9,16 @@ versions and are described in `docs/upgrading.md`.
 
 ### Added
 
+- mailcow extras (phase 5): `release_from_quarantine` and `delete_from_quarantine` (only items
+  addressed to the mailbox or its aliases, re-checked by the broker), `delivery_status`
+  (per-recipient sent/deferred/bounced with the remote server's answer, from mailcow's mail log),
+  `my_addresses` (the mailbox and its aliases).
+- `list_spam` includes quarantined items in mailcow mode; `find_replies` also lists quarantined
+  messages from the original recipients after the original was sent, marked as possible replies.
+- `find_contacts`: CardDAV search (SOGo in mailcow mode with the app password's DAV access; any
+  CardDAV server in generic mode via `CARDDAV_URL`), with standard discovery.
+- Rejected broker capabilities sign the connection out like rejected passwords.
+
 - mailcow mode (phase 4): "Sign in with mailcow" on the consent page. The user signs in on
   mailcow's own login page (with 2FA); the OAuth state is bound to the browser. The mailcow token
   goes only to the broker, which asks mailcow who it is and creates an app password named

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from datetime import date, datetime
+from email.utils import getaddresses
 from typing import Annotated, Any
 
 import anyio
@@ -13,7 +14,8 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 
 from mailcow_mcp.compose import normalize_message_id
-from mailcow_mcp.errors import InvalidInput
+from mailcow_mcp.config import Mode
+from mailcow_mcp.errors import InvalidInput, MailError
 from mailcow_mcp.imap import FLAGGED, SEEN, ImapSession
 from mailcow_mcp.messages import (
     IMAGE_TYPES,
@@ -29,6 +31,7 @@ from mailcow_mcp.messages import (
     body_text,
     extract_text,
     header,
+    iso_timestamp,
     message_date,
     parse_day,
     summarize,
@@ -98,11 +101,20 @@ class FullMessage(BaseModel):
     likely_spam: bool
 
 
-class Reply(MessageSummary):
+class Reply(BaseModel):
     found_in: str = Field(description='"inbox", "junk" or "quarantine".')
+    uid: int | None = Field(default=None, description="For inbox/junk: UID in folder.")
+    folder: str | None = None
+    quarantine_id: int | None = Field(default=None, description="For quarantine: the item id.")
+    message_id: str | None = None
+    date: str | None = None
+    sender: str | None = None
+    subject: str = ""
+    spam_score: float | None = None
     likely_spam: bool = False
     possible_reply: bool = Field(
-        default=False, description="Matched by sender and time, not by threading headers."
+        default=False,
+        description="Matched by sender and time (quarantine keeps no threading headers), not by In-Reply-To/References.",
     )
 
 
@@ -110,6 +122,7 @@ class ReplyList(BaseModel):
     message_id: str
     replies: list[Reply]
     searched: list[str]
+    note: str | None = None
     notice: str = LISTING_NOTICE
 
 
@@ -430,7 +443,8 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         title="Find replies",
         description=(
             "Find replies to a message you sent (by its Message-ID, e.g. from send_email), using "
-            "In-Reply-To/References. Searches INBOX and, by default, Junk: replies often land in "
+            "In-Reply-To/References. Searches INBOX and, by default, Junk (and on mailcow the "
+            "quarantine, matched by the original recipients and time): replies often land in "
             "spam. Each result says where it was found."
         ),
         annotations=READ_ONLY,
@@ -440,26 +454,108 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         message_id: Annotated[str, Field(max_length=998)],
         include_spam: bool = True,
     ) -> ReplyList:
-        def work(session: ImapSession, mailbox: Any) -> ReplyList:
-            mid = normalize_message_id(message_id)
-            places = [("inbox", "INBOX")]
-            junk = session.folder("junk")
-            if include_spam and junk:
-                places.append(("junk", junk))
-            replies: list[Reply] = []
-            for where, name in places:
-                uids = session.search(name, _or_search([("In-Reply-To", mid), ("References", mid)]))
-                for summary in _summaries(session, name, list(reversed(uids))[:50]):
-                    if summary.message_id == mid:
-                        continue
-                    replies.append(
-                        Reply(**summary.model_dump(), found_in=where, likely_spam=where == "junk")
-                    )
-            replies.sort(key=lambda r: r.date or "")
-            return ReplyList(message_id=mid, replies=replies, searched=[n for _, n in places])
+        async with services.tool(ctx, "find_replies") as mailbox:
 
-        result: ReplyList = await with_session(ctx, "find_replies", work)
-        return result
+            def work() -> tuple[ReplyList, set[str], datetime | None]:
+                mid = normalize_message_id(message_id)
+                with services.imap.connect(mailbox.username, mailbox.password) as session:
+                    places = [("inbox", "INBOX")]
+                    junk = session.folder("junk")
+                    if include_spam and junk:
+                        places.append(("junk", junk))
+                    replies: list[Reply] = []
+                    for where, name in places:
+                        uids = session.search(
+                            name, _or_search([("In-Reply-To", mid), ("References", mid)])
+                        )
+                        for s in _summaries(session, name, list(reversed(uids))[:50]):
+                            if s.message_id == mid:
+                                continue
+                            replies.append(
+                                Reply(
+                                    found_in=where,
+                                    uid=s.uid,
+                                    folder=name,
+                                    message_id=s.message_id,
+                                    date=s.date,
+                                    sender=s.sender,
+                                    subject=s.subject,
+                                    spam_score=s.spam_score,
+                                    likely_spam=where == "junk",
+                                )
+                            )
+                    # Who the original went to, and when: for matching quarantine items.
+                    recipients: set[str] = set()
+                    sent_at = None
+                    found = session.locate(mid, ("sent", "inbox", "archive"))
+                    if found:
+                        folder, uid = found
+                        raw = session.headers(folder, [uid], ["To", "Cc", "Bcc", "Date"]).get(
+                            uid, b""
+                        )
+                        headers = parse_message(raw)
+                        recipients = {
+                            addr.lower()
+                            for _, addr in getaddresses(
+                                [
+                                    str(v)
+                                    for n in ("To", "Cc", "Bcc")
+                                    for v in headers.get_all(n, [])
+                                ]
+                            )
+                            if addr
+                        }
+                        sent_at = message_date(headers)
+                    result = ReplyList(
+                        message_id=mid, replies=replies, searched=[n for _, n in places]
+                    )
+                    return result, recipients, sent_at
+
+            result, recipients, sent_at = await anyio.to_thread.run_sync(work)
+            if include_spam and services.config.mode is Mode.MAILCOW:
+                if not recipients or sent_at is None:
+                    result.note = (
+                        "The original message isn't in the mailbox, so quarantine couldn't be "
+                        "checked (it's matched by the original recipients)."
+                    )
+                else:
+                    try:
+                        items = (await services.broker_call(mailbox, "quarantine_list"))["items"]
+                    except MailError as exc:
+                        result.note = f"Quarantine not checked: {exc}"
+                        items = []
+                    else:
+                        result.searched.append("quarantine")
+                    earliest = sent_at.timestamp() - 3600  # clock skew
+                    for item in items:
+                        created = (
+                            datetime.fromisoformat(item["created"]) if item.get("created") else None
+                        )
+                        if (
+                            item.get("sender", "").lower() in recipients
+                            and created
+                            and created.timestamp() >= earliest
+                        ):
+                            result.replies.append(
+                                Reply(
+                                    found_in="quarantine",
+                                    quarantine_id=item["id"],
+                                    date=item["created"],
+                                    sender=item["sender"],
+                                    subject=item["subject"],
+                                    spam_score=item.get("score"),
+                                    likely_spam=True,
+                                    possible_reply=True,
+                                )
+                            )
+            result.replies.sort(key=lambda r: iso_timestamp(r.date))
+            services.audit(
+                "find_replies",
+                mailbox=mailbox.username,
+                client=mailbox.client_name,
+                count=len(result.replies),
+            )
+            return result
 
     @mcp.tool(
         name="get_thread",

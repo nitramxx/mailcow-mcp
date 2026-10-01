@@ -28,9 +28,11 @@ mailcow-mcp = "mailcow_mcp.cli:main"
 
 [dependency-groups]
 dev = [
+    "a2wsgi>=1.10.10",
     "httpx>=0.28",
     "mypy>=2.0",
     "pytest>=9.0",
+    "radicale>=3.8.1",
     "ruff>=0.16",
 ]
 
@@ -69,3 +71,4 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 addopts = "-ra"
 markers = ["integration: needs Docker (real Dovecot + Postfix test server)"]
+filterwarnings = ["ignore::DeprecationWarning:radicale.*"]

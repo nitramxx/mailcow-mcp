@@ -194,6 +194,17 @@ def attachments(message: Message) -> list[AttachmentInfo]:
     return result
 
 
+def iso_timestamp(value: str | None) -> float:
+    """Sort key for ISO dates with any offset (unknown dates sort first)."""
+    if not value:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return 0.0
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp()
+
+
 def truncate(text: str, limit: int) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False
