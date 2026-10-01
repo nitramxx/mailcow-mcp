@@ -88,7 +88,12 @@ and whether mailcow-mcp is running. Each step shows ✓ (done), ✗ (to do) or ?
 and only the open steps are listed with exact values. Run it as often as you like: after each
 step below, run it again to confirm.
 
-Note the two addresses; the example below uses `172.22.1.231` (app) and `172.22.1.232` (broker).
+Note the two addresses it picks (`app address`, `broker address`). They're the containers' own
+fixed addresses **inside mailcow's Docker network**, not your server's public IP. You enter them
+in mailcow in steps 5 and 6, and they're saved in `/opt/mailcow-mcp/.env` (`APP_IP`, `BROKER_IP`),
+so they stay the same. The examples below use `172.22.1.231` (app) and `172.22.1.232` (broker),
+which is what you get with mailcow's default network `172.22.1.0/24`; use the ones the helper
+printed for you.
 
 ## 4. OAuth2 app in mailcow
 
