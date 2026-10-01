@@ -48,6 +48,7 @@ PURGE_INTERVAL_SECONDS = 300
 DEPROVISION_INTERVAL_SECONDS = 60
 RECONCILE_INTERVAL_SECONDS = 3600
 REGISTRATIONS_PER_IP_HOUR = 20
+MAX_REGISTRATION_BYTES = 64 * 1024
 
 INSTRUCTIONS = (
     "Email tools for the signed-in mailbox. Every tool acts only as that mailbox. "
@@ -82,6 +83,15 @@ class RegistrationLimitMiddleware:
         self.limiter = limiter
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == "/register":
+            length = dict(scope.get("headers", [])).get(b"content-length", b"0")
+            if not length.isdigit() or int(length) > MAX_REGISTRATION_BYTES:
+                response = JSONResponse(
+                    {"error": "invalid_client_metadata", "error_description": "body too large"},
+                    status_code=413,
+                )
+                await response(scope, receive, send)
+                return
         if (
             scope["type"] == "http"
             and scope["method"] == "POST"
@@ -286,6 +296,8 @@ def create_app(
     register_tools(mcp, services)
     mcp_app = mcp.streamable_http_app(
         streamable_http_path=MCP_PATH,
+        # Tool calls carry base64 attachments: room for MAX_MESSAGE_MB plus encoding.
+        max_request_body_size=max(4, config.max_message_mb * 3 // 2 + 2) * 1024 * 1024,
         # Requests carry bearer tokens, not cookies, so DNS rebinding can't borrow
         # a victim's session; browser-based clients send their own Origin.
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),

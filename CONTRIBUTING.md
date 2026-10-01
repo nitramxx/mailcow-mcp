@@ -7,6 +7,7 @@ Report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
 ```sh
 uv sync                       # creates .venv with runtime and dev dependencies
+scripts/check                 # everything CI checks: lint, format, types, tests
 uv run pytest                 # tests (integration tests need Docker)
 uv run pytest -m "not integration"
 uv run ruff check .           # lint

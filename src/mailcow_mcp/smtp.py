@@ -75,6 +75,13 @@ class SmtpSender:
                 await smtp.login(username, password)
             except aiosmtplib.SMTPAuthenticationError as exc:
                 raise CredentialsRejected() from exc
+            except (aiosmtplib.SMTPNotSupported, aiosmtplib.SMTPException) as exc:
+                if isinstance(exc, aiosmtplib.SMTPServerDisconnected):
+                    raise
+                raise MailError(
+                    "The outgoing mail server offers no usable authentication method, so "
+                    "nothing was sent."
+                ) from exc
             try:
                 refused, _ = await smtp.sendmail(envelope_from, list(recipients), message)
             except aiosmtplib.SMTPSenderRefused as exc:

@@ -11,6 +11,7 @@ import time
 import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import anyio
 import uvicorn
@@ -35,6 +36,7 @@ from mailcow_mcp.db import Database
 from mailcow_mcp.errors import MailError
 from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
 from mailcow_mcp.login import LOGIN_PATH, normalize_email
+from mailcow_mcp.logs import setup_logging
 from mailcow_mcp.oauth import Provider
 
 log = logging.getLogger("mailcow_mcp")
@@ -59,10 +61,16 @@ def _check_data_dir(path: Path) -> str | None:
     return None
 
 
-def _setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+def app_server_options(config: AppConfig) -> dict[str, Any]:
+    """uvicorn settings for the app: the real client IP only from TRUSTED_PROXIES."""
+    return {
+        "host": "0.0.0.0",  # noqa: S104 - runs in a container; nginx is the only route in
+        "port": config.port,
+        "proxy_headers": True,
+        "forwarded_allow_ips": list(config.trusted_proxies),
+        "server_header": False,
+        "log_config": None,
+    }
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -72,19 +80,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return _fail(str(exc))
     if error := _check_data_dir(config.data_dir):
         return _fail(error)
-    _setup_logging()
+    setup_logging()
     if not config.tls_verify:
         log.warning("TLS_VERIFY=false: mail server certificates are not verified")
     log.info("starting app %s in %s mode on port %d", __version__, config.mode, config.port)
-    uvicorn.run(
-        create_app(config),
-        host="0.0.0.0",  # noqa: S104 - runs in a container; nginx is the only route in
-        port=config.port,
-        proxy_headers=True,
-        forwarded_allow_ips=list(config.trusted_proxies),
-        server_header=False,
-        log_config=None,
-    )
+    uvicorn.run(create_app(config), **app_server_options(config))
     return 0
 
 
@@ -95,7 +95,7 @@ def cmd_broker(args: argparse.Namespace) -> int:
         return _fail(str(exc))
     if error := _check_data_dir(config.data_dir):
         return _fail(error)
-    _setup_logging()
+    setup_logging()
     if not config.tls_verify:
         log.warning("TLS_VERIFY=false: the mailcow API certificate is not verified")
     log.info("starting broker %s on port %d", __version__, config.port)

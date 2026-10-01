@@ -7,7 +7,24 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+### Security
+
+- Access logs no longer contain query strings (they carried sign-in request ids and mailcow OAuth
+  codes).
+- SMTP servers that advertise AUTH without a usable mechanism are refused cleanly; nothing is sent.
+- Client registration bodies are limited to 64 KB.
+
+### Fixed
+
+- The `/mcp` request body limit now follows `MAX_MESSAGE_MB`; the SDK default (4 MB) refused
+  tool calls with larger attachments.
+
 ### Added
+
+- Negative tests (phase 6): unauthenticated, plaintext and wrong-certificate SMTP servers get
+  nothing; `X-Forwarded-For` is used only from `TRUSTED_PROXIES`; tokens bound to another resource
+  and other users' MCP sessions are refused; body limits.
+- `scripts/check` runs everything CI checks.
 
 - mailcow extras (phase 5): `release_from_quarantine` and `delete_from_quarantine` (only items
   addressed to the mailbox or its aliases, re-checked by the broker), `delivery_status`
