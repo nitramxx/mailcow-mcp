@@ -217,6 +217,28 @@ class TestMailcowTools:
             session.call("delete_from_quarantine", id=8)
         assert [q["id"] for q in mailcow.quarantine] == [8]
 
+    def test_my_addresses_include_display_names(
+        self,
+        running_mailcow: RunningMailcow,
+        mailcow: MockMailcow,
+        certs: Path,
+        broker: BrokerSetup,
+    ) -> None:
+        mailcow.aliases = [
+            {"id": 1, "address": "sales@example.test", "goto": "alice@example.test", "active": "1"}
+        ]
+        for app in make_mailcow_harness(
+            running_mailcow,
+            certs,
+            broker,
+            FROM_NAMES="alice@example.test=Alice Nováková; sales@example.test=Sales",
+        ):
+            result = connect(app, certs).call("my_addresses")
+            assert result["display_names"] == {
+                "alice@example.test": "Alice Nováková",
+                "sales@example.test": "Sales",
+            }
+
     def test_password_connections_cant_use_mailcow_tools(
         self, running_mailcow: RunningMailcow, certs: Path, broker: BrokerSetup
     ) -> None:

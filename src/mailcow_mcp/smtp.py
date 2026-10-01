@@ -38,6 +38,7 @@ class SmtpSender:
         self.host = config.smtp_host
         self.port = config.smtp_port
         self.security = config.smtp_security
+        self.helo_name = config.smtp_helo_name
         self.context = client_context(
             server_name=config.tls_server_name, verify=config.tls_verify, ca_file=config.tls_ca_file
         )
@@ -58,6 +59,7 @@ class SmtpSender:
             start_tls=self.security is Security.STARTTLS,
             tls_context=self.context,
             timeout=TIMEOUT_SECONDS,
+            local_hostname=self.helo_name,
         )
         try:
             await smtp.connect()

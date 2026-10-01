@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from email.utils import format_datetime, getaddresses, localtime
+from email.utils import getaddresses
 from typing import Annotated, Any
 
 import anyio
@@ -19,6 +19,7 @@ from mailcow_mcp.compose import (
     Outgoing,
     RenderedPdf,
     compose,
+    format_date,
     inline_attachment,
     new_message_id,
     normalize_address,
@@ -133,6 +134,8 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     outgoing,
                     username=mailbox.username,
                     max_message_bytes=services.max_message_bytes,
+                    from_names=config.from_names,
+                    timezone=config.timezone,
                 )
             except BaseException:
                 session.__exit__(None, None, None)
@@ -148,8 +151,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             "Send an email from the signed-in mailbox. Give the body as Markdown (sent as HTML "
             "with a plain-text alternative) or as plain text. Attachments can be uploaded "
             "(base64), taken from a message in the mailbox, or rendered as a PDF from Markdown. "
-            "Set in_reply_to to a Message-ID to reply in its thread. Returns the new message's "
-            "Message-ID." + USER_CONTENT_NOTE
+            "Set in_reply_to to a Message-ID to reply in its thread. Set from_name so recipients "
+            "see a display name; if omitted, the configured default for from_address is used. "
+            "Returns the new message's Message-ID." + USER_CONTENT_NOTE
         ),
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True
@@ -163,7 +167,16 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         bcc: Recipients | None = None,
         body_markdown: Annotated[str | None, Field(description="Body in Markdown.")] = None,
         body_text: Annotated[str | None, Field(description="Plain-text body.")] = None,
-        from_name: Annotated[str | None, Field(max_length=100)] = None,
+        from_name: Annotated[
+            str | None,
+            Field(
+                max_length=100,
+                description=(
+                    "Set from_name so recipients see a display name; if omitted, the "
+                    "configured default for from_address is used."
+                ),
+            ),
+        ] = None,
         from_address: Annotated[
             str | None,
             Field(
@@ -242,7 +255,16 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         bcc: Recipients | None = None,
         body_markdown: Annotated[str | None, Field(description="Body in Markdown.")] = None,
         body_text: Annotated[str | None, Field(description="Plain-text body.")] = None,
-        from_name: Annotated[str | None, Field(max_length=100)] = None,
+        from_name: Annotated[
+            str | None,
+            Field(
+                max_length=100,
+                description=(
+                    "Set from_name so recipients see a display name; if omitted, the "
+                    "configured default for from_address is used."
+                ),
+            ),
+        ] = None,
         from_address: Annotated[
             str | None, Field(description="One of the mailbox's addresses.")
         ] = None,
@@ -330,7 +352,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                         message["Message-ID"] = new_message_id(sender.rpartition("@")[2])
                     message_id = str(message["Message-ID"])
                     del message["Date"]
-                    message["Date"] = format_datetime(localtime())
+                    message["Date"] = format_date(config.timezone)
                     copy = message.as_bytes(policy=POLICY)
                     del message["Bcc"]
                     transmitted = message.as_bytes(policy=POLICY)

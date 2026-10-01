@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from email.message import EmailMessage
+from email.message import EmailMessage, Message
 from email.policy import default as default_policy
 
 import pytest
@@ -282,3 +282,111 @@ class TestMime:
         message = EmailMessage(policy=default_policy)
         message.set_content("only")
         assert [n for n, _ in walk_parts(message)] == ["1"]
+
+
+BODY = "Dobrý den — Příliš žluťoučký kůň úpěl ďábelské ódy.\n\nDruhý odstavec: „uvozovky“ a €."
+SUBJECT = "Nabídka — Příliš žluťoučký kůň"
+NAME = "Jan Novák"
+
+
+def _raw_and_parsed(**fields: object) -> tuple[bytes, EmailMessage]:
+    composed = compose(
+        build(subject=SUBJECT, from_name=NAME, **fields),
+        username="jan@firma.cz",
+        max_message_bytes=MB,
+    )
+    raw = composed.as_bytes()
+    return raw, parse_message(raw)
+
+
+def _text(part: Message) -> str:
+    content = part.get_content()  # type: ignore[attr-defined]  # EmailMessage parts have it
+    return str(content).replace("\r\n", "\n").rstrip("\n")
+
+
+class TestEncoding:
+    @pytest.mark.parametrize("path", ["plain", "markdown"])
+    def test_non_ascii_message_is_7bit_clean(self, path: str) -> None:
+        fields: dict[str, object] = (
+            {"body_text": BODY} if path == "plain" else {"body_text": None, "body_markdown": BODY}
+        )
+        raw, message = _raw_and_parsed(**fields)
+        # The whole message is pure 7-bit ASCII: nothing relies on 8BITMIME.
+        assert raw.isascii()
+        # RFC 5322 lines ≤ 78 (headers folded), RFC 2045 quoted-printable lines ≤ 76.
+        assert max(len(line) for line in raw.split(b"\r\n")) <= 78
+        assert raw.count(b"MIME-Version") == 1
+        assert b"Content-Transfer-Encoding: 8bit" not in raw
+        text_parts = [p for p in message.walk() if p.get_content_maintype() == "text"]
+        assert len(text_parts) == (1 if path == "plain" else 2)
+        for part in text_parts:
+            assert part["Content-Transfer-Encoding"] == "quoted-printable"
+            assert part.get_content_charset() == "utf-8"
+        plain = message.get_body(("plain",))
+        assert plain is not None and _text(plain) == BODY  # exactly the original text
+        if path == "markdown":
+            html = message.get_body(("html",))
+            assert html is not None and "Příliš žluťoučký kůň" in str(html.get_content())
+        # Subject and display name are RFC 2047 encoded on the wire, and decode back.
+        assert b"=?utf-8?" in raw.split(b"\r\n\r\n", 1)[0]
+        assert message["Subject"] == SUBJECT
+        assert message["From"].addresses[0].display_name == NAME
+        assert message["From"].addresses[0].addr_spec == "jan@firma.cz"
+        assert message["Message-ID"].endswith("@firma.cz>")
+
+    def test_ascii_parts_stay_7bit(self) -> None:
+        raw, message = _raw_and_parsed(body_text="Plain ASCII only.")
+        assert message["Content-Transfer-Encoding"] == "7bit"
+        assert raw.isascii()
+
+    def test_long_ascii_lines_are_encoded(self) -> None:
+        _, message = _raw_and_parsed(body_text="x" * 2000)
+        assert message["Content-Transfer-Encoding"] == "quoted-printable"
+
+    def test_display_name_needing_quotes(self) -> None:
+        composed = compose(
+            build(from_name="Novák, Jan (Firma)"), username="jan@firma.cz", max_message_bytes=MB
+        )
+        message = parse_message(composed.as_bytes())
+        assert message["From"].addresses[0].display_name == "Novák, Jan (Firma)"
+
+
+class TestDefaults:
+    def test_configured_display_name(self) -> None:
+        names = {"urx@lexorate.com": "Martin Urx"}
+        composed = compose(
+            build(from_address="URX@lexorate.com"),
+            username="urx@lexorate.com",
+            max_message_bytes=MB,
+            from_names=names,
+        )
+        assert parse_message(composed.as_bytes())["From"] == "Martin Urx <URX@lexorate.com>"
+        # The caller's from_name wins; a name inside from_address comes second.
+        explicit = compose(
+            build(from_name="Someone"),
+            username="urx@lexorate.com",
+            max_message_bytes=MB,
+            from_names=names,
+        )
+        assert parse_message(explicit.as_bytes())["From"].addresses[0].display_name == "Someone"
+        inline = compose(
+            build(from_address="Team <urx@lexorate.com>"),
+            username="urx@lexorate.com",
+            max_message_bytes=MB,
+            from_names=names,
+        )
+        assert parse_message(inline.as_bytes())["From"].addresses[0].display_name == "Team"
+        unnamed = compose(
+            build(), username="other@lexorate.com", max_message_bytes=MB, from_names=names
+        )
+        assert parse_message(unnamed.as_bytes())["From"] == "other@lexorate.com"
+
+    def test_date_in_the_configured_time_zone(self) -> None:
+        from datetime import datetime
+        from email.utils import parsedate_to_datetime
+        from zoneinfo import ZoneInfo
+
+        prague = ZoneInfo("Europe/Prague")
+        composed = compose(build(), username="a@example.org", max_message_bytes=MB, timezone=prague)
+        date = parsedate_to_datetime(str(parse_message(composed.as_bytes())["Date"]))
+        assert date.utcoffset() == datetime.now(prague).utcoffset()  # +0200 / +0100, not +0000

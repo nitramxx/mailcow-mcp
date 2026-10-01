@@ -113,6 +113,39 @@ class TestAppMailcowMode:
         assert c.carddav_url == "https://nginx-mailcow/SOGo/dav"
         assert c.carddav_internal is True
 
+    def test_sending_settings(self) -> None:
+        c = load_app_config(
+            mailcow_env(
+                FROM_NAMES="URX@lexorate.com = Martin Urx; sales@lexorate.com=Lexorate Sales\n",
+                TIMEZONE="Europe/Prague",
+                SMTP_HELO_NAME="Email.Ozpr.cz",
+            )
+        )
+        assert c.from_names == {
+            "urx@lexorate.com": "Martin Urx",
+            "sales@lexorate.com": "Lexorate Sales",
+        }
+        assert str(c.timezone) == "Europe/Prague"
+        assert c.smtp_helo_name == "email.ozpr.cz"
+        defaults = load_app_config(mailcow_env())
+        assert defaults.smtp_helo_name == "mail.example.com"  # TLS_SERVER_NAME
+        assert defaults.timezone is None and defaults.from_names == {}
+
+    @pytest.mark.parametrize(
+        ("name", "value", "message"),
+        [
+            ("FROM_NAMES", "no-equals-sign", "address=Name"),
+            ("FROM_NAMES", "a@example.com=", "invalid display name"),
+            ("FROM_NAMES", "a@example.com=Bad\x01Name", "invalid display name"),
+            ("TIMEZONE", "Mars/Olympus", "time zone"),
+            ("SMTP_HELO_NAME", "not a host", "not a valid hostname"),
+        ],
+    )
+    def test_invalid_sending_settings(self, name: str, value: str, message: str) -> None:
+        with pytest.raises(ConfigError) as exc:
+            load_app_config(mailcow_env(**{name: value}))
+        assert message in "\n".join(exc.value.errors)
+
     def test_empty_values_count_as_missing(self) -> None:
         with pytest.raises(ConfigError) as exc:
             load_app_config(mailcow_env(PUBLIC_URL="  ", ENC_KEY=""))

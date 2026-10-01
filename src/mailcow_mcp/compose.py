@@ -6,8 +6,9 @@ import base64
 import binascii
 import re
 import secrets
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, tzinfo
 from email.headerregistry import Address
 from email.message import EmailMessage
 from email.policy import SMTP
@@ -26,7 +27,8 @@ MAX_BODY_CHARS = 1_000_000
 MAX_SUBJECT_LENGTH = 500
 MAX_NAME_LENGTH = 100
 
-POLICY = SMTP.clone(max_line_length=998)
+# CRLF, headers folded at 78, quoted-printable wrapped at 76 (RFC 2045).
+POLICY = SMTP
 
 _FORBIDDEN_IN_HEADERS = re.compile(r"[\r\n\x00]")
 _LOCAL_PART_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,64}$")
@@ -252,12 +254,36 @@ def inline_attachment(spec: InlineAttachment, max_bytes: int) -> FileAttachment:
 # --- composing ---------------------------------------------------------------
 
 
+def format_date(timezone: tzinfo | None = None) -> str:
+    """RFC 5322 Date for now, in ``timezone`` (default: the system's local time zone)."""
+    now = datetime.now(timezone) if timezone is not None else localtime()
+    return format_datetime(now)
+
+
+def transfer_encoding(text: str) -> str:
+    """7bit for plain ASCII with short lines, else quoted-printable: never raw 8bit."""
+    if text.isascii() and all(len(line) <= 900 for line in text.splitlines()):
+        return "7bit"
+    return "quoted-printable"
+
+
 def new_message_id(domain: str) -> str:
     return f"<{secrets.token_hex(16)}@{domain}>"
 
 
-def compose(draft: Outgoing, *, username: str, max_message_bytes: int) -> Composed:
-    """Validate and build the message. Raises InvalidInput / LimitExceeded."""
+def compose(
+    draft: Outgoing,
+    *,
+    username: str,
+    max_message_bytes: int,
+    from_names: Mapping[str, str] | None = None,
+    timezone: tzinfo | None = None,
+) -> Composed:
+    """Validate and build the message. Raises InvalidInput / LimitExceeded.
+
+    ``from_names``: default display names by sender address, used when the caller gives none.
+    ``timezone``: for the Date header (default: the system's local time zone).
+    """
     to = parse_addresses(draft.to, "to")
     cc = parse_addresses(draft.cc, "cc")
     bcc = parse_addresses(draft.bcc, "bcc")
@@ -269,7 +295,12 @@ def compose(draft: Outgoing, *, username: str, max_message_bytes: int) -> Compos
 
     subject = header_text(draft.subject, "subject", MAX_SUBJECT_LENGTH)
     from_name = header_text(draft.from_name, "from_name", MAX_NAME_LENGTH)
-    sender = parse_address(draft.from_address or username, "from_address").addr_spec
+    sender_address = parse_address(draft.from_address or username, "from_address")
+    sender = sender_address.addr_spec
+    # The caller's name, else a name given in from_address, else the configured default.
+    from_name = (
+        from_name or sender_address.display_name or (from_names or {}).get(sender.lower(), "")
+    )
 
     if (draft.body_markdown is None) == (draft.body_text is None):
         raise InvalidInput("Give exactly one of body_markdown or body_text.")
@@ -287,7 +318,7 @@ def compose(draft: Outgoing, *, username: str, max_message_bytes: int) -> Compos
     if cc:
         message["Cc"] = cc
     message["Subject"] = subject
-    message["Date"] = format_datetime(localtime())
+    message["Date"] = format_date(timezone)
     message_id = new_message_id(sender.rpartition("@")[2])
     message["Message-ID"] = message_id
     if draft.in_reply_to:
@@ -300,18 +331,20 @@ def compose(draft: Outgoing, *, username: str, max_message_bytes: int) -> Compos
 
     body = body.replace("\r\n", "\n")
     if draft.body_markdown is not None:
-        message.set_content(body, subtype="plain", charset="utf-8")
-        message.add_alternative(
-            EMAIL_HTML.format(body=markdown_to_html(body)), subtype="html", charset="utf-8"
-        )
+        html = EMAIL_HTML.format(body=markdown_to_html(body))
+        message.set_content(body, subtype="plain", charset="utf-8", cte=transfer_encoding(body))
+        message.add_alternative(html, subtype="html", charset="utf-8", cte=transfer_encoding(html))
     else:
-        message.set_content(body, subtype="plain", charset="utf-8")
+        message.set_content(body, subtype="plain", charset="utf-8", cte=transfer_encoding(body))
     for attachment in draft.attachments:
         maintype, _, subtype = attachment.mime_type.partition("/")
         message.add_attachment(
             attachment.data, maintype=maintype, subtype=subtype, filename=attachment.filename
         )
 
+    for part in message.walk():
+        if part is not message:
+            del part["MIME-Version"]  # the stdlib adds it to sub-parts; it belongs only on top
     transmitted = message.as_bytes(policy=POLICY)
     if len(transmitted) > max_message_bytes:
         size = max_message_bytes // (1024 * 1024)

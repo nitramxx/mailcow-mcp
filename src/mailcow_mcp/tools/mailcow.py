@@ -51,6 +51,10 @@ class DeliveryStatus(BaseModel):
 class Addresses(BaseModel):
     mailbox: str
     aliases: list[str]
+    display_names: dict[str, str] = Field(
+        default_factory=dict,
+        description="The configured default display name per address (used when from_name is omitted).",
+    )
     note: str = (
         "Use these as from_address. mailcow's sender rules decide what is accepted; "
         "send_email reports a refusal."
@@ -163,7 +167,11 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
         async with services.tool(ctx, "my_addresses") as mailbox:
             result = await services.broker_call(mailbox, "aliases")
             services.audit("my_addresses", mailbox=mailbox.username, client=mailbox.client_name)
-            return Addresses(mailbox=result["mailbox"], aliases=result["aliases"])
+            addresses = [result["mailbox"], *result["aliases"]]
+            names = {a: n for a in addresses if (n := services.config.from_names.get(a.lower()))}
+            return Addresses(
+                mailbox=result["mailbox"], aliases=result["aliases"], display_names=names
+            )
 
 
 def _register_contacts(mcp: MCPServer[Any], services: Services, carddav: CardDav) -> None:

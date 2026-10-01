@@ -139,6 +139,7 @@ IPV4_NETWORK="$(conf IPV4_NETWORK 172.22.1)"
 HTTPS_PORT="$(conf HTTPS_PORT 443)"
 ENABLE_IPV6="$(conf ENABLE_IPV6 true)"
 ADDITIONAL_SAN="$(conf ADDITIONAL_SAN)"
+MAILCOW_TZ="$(conf TZ UTC)"
 NETWORK="${PROJECT}_mailcow-network"
 
 VERSION="$(git -C "$MAILCOW_DIR" describe --tags 2>/dev/null || true)"
@@ -380,7 +381,9 @@ IMAP_HOST=dovecot-mailcow
 SMTP_HOST=postfix-mailcow
 TLS_SERVER_NAME=$MAILCOW_HOSTNAME
 TRUSTED_PROXIES=$IPV4_NETWORK.0/24
+TIMEZONE=$MAILCOW_TZ
 ENC_KEY=$(new_key)"
+add_missing "$KIT_DIR/app.env" TIMEZONE "$MAILCOW_TZ"
 fill_empty "$KIT_DIR/app.env" MAILCOW_OAUTH_CLIENT_ID "$OAUTH_CLIENT_ID"
 fill_empty "$KIT_DIR/app.env" MAILCOW_OAUTH_CLIENT_SECRET "$OAUTH_CLIENT_SECRET"
 

@@ -12,9 +12,11 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import tzinfo
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
 
@@ -83,6 +85,7 @@ class AppConfig:
     smtp_host: str
     smtp_port: int
     smtp_security: Security
+    smtp_helo_name: str
     carddav_url: str | None
     carddav_internal: bool  # carddav_url points at MAILCOW_INTERNAL_URL
     # None (generic mode only): verify each server against the host connected to.
@@ -93,6 +96,8 @@ class AppConfig:
     allowed_domains: tuple[str, ...]
     enc_key: str = field(repr=False)
     save_sent: SaveSent
+    from_names: dict[str, str]
+    timezone: tzinfo | None  # None: the system's local time zone
     send_limit_hour: int
     send_limit_day: int
     max_message_mb: int
@@ -325,6 +330,36 @@ class _Reader:
                 result[role] = value
         return result
 
+    def from_names(self, name: str) -> dict[str, str]:
+        """``a@example.com=Name; b@example.com=Other`` (or one per line)."""
+        value = self.raw(name)
+        result: dict[str, str] = {}
+        if value is None:
+            return result
+        for entry in filter(None, (e.strip() for e in re.split(r"[;\n]", value))):
+            address, eq, display = entry.partition("=")
+            address = address.strip().lower()
+            display = display.strip()
+            local, at, domain = address.rpartition("@")
+            if not eq or not at or not local or not self.hostname(name, domain):
+                self.error(name, f"expected address=Name entries (got {entry!r})")
+                continue
+            if not display or len(display) > 100 or any(ord(c) < 32 for c in display):
+                self.error(name, f"invalid display name for {address}")
+                continue
+            result[address] = display
+        return result
+
+    def timezone(self, name: str) -> tzinfo | None:
+        value = self.raw(name)
+        if value is None:
+            return None
+        try:
+            return ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            self.error(name, f"not a time zone name like Europe/Prague (got {value!r})")
+            return None
+
     def text(self, name: str, default: str, max_length: int) -> str:
         value = self.raw(name)
         if value is None:
@@ -426,6 +461,10 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         smtp_host=smtp_host,
         smtp_port=smtp_port,
         smtp_security=smtp_security,
+        # EHLO name: the mail server's own name, not the container's ("[127.0.0.1]").
+        smtp_helo_name=r.hostname("SMTP_HELO_NAME", r.raw("SMTP_HELO_NAME"))
+        or tls_server_name
+        or smtp_host,
         carddav_url=carddav_url,
         carddav_internal=carddav_internal,
         tls_server_name=tls_server_name,
@@ -435,6 +474,8 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         allowed_domains=r.domains("ALLOWED_DOMAINS"),
         enc_key=r.key("ENC_KEY"),
         save_sent=r.choice("SAVE_SENT", SaveSent, SaveSent.ALWAYS),
+        from_names=r.from_names("FROM_NAMES"),
+        timezone=r.timezone("TIMEZONE"),
         send_limit_hour=send_limit_hour,
         send_limit_day=send_limit_day,
         max_message_mb=r.integer("MAX_MESSAGE_MB", 15, 1, 100),

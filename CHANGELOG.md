@@ -7,6 +7,21 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-02
+
+### Changed
+
+- Outgoing mail is 7-bit clean: text parts with non-ASCII characters (or long lines) are
+  quoted-printable UTF-8, never raw 8bit; plain ASCII stays 7bit. Lines are wrapped at 76
+  (quoted-printable) and headers folded at 78; sub-parts no longer repeat `MIME-Version`.
+- `FROM_NAMES`: default display names per sender address, used when a client doesn't give
+  `from_name` (a name in `from_address` comes first). `my_addresses` returns them; the
+  `send_email` and `save_draft` descriptions tell clients to set `from_name`.
+- `SMTP_HELO_NAME`: the EHLO name (default `TLS_SERVER_NAME`, i.e. the mail server's name) instead
+  of the container's `[127.0.0.1]` in the Received header.
+- `TIMEZONE`: the Date header's time zone (the mailcow kit copies mailcow's `TZ`), instead of
+  `+0000`.
+
 ## [0.1.3] - 2026-10-02
 
 ### Fixed
@@ -102,7 +117,8 @@ First release.
   user guide.
 - Multi-arch image (linux/amd64, linux/arm64) on GHCR with SBOM and provenance.
 
-[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.0...v0.1.1
