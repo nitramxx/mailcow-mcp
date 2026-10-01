@@ -10,7 +10,6 @@ from __future__ import annotations
 import socket
 import ssl
 from pathlib import Path
-from typing import Any
 
 
 class _FixedNameContext(ssl.SSLContext):
@@ -18,15 +17,39 @@ class _FixedNameContext(ssl.SSLContext):
 
     fixed_server_name: str
 
-    def wrap_socket(self, sock: socket.socket, *args: Any, **kwargs: Any) -> ssl.SSLSocket:
-        kwargs["server_hostname"] = self.fixed_server_name
-        return super().wrap_socket(sock, *args, **kwargs)
+    def wrap_socket(  # type: ignore[override]
+        self,
+        sock: socket.socket,
+        server_side: bool = False,
+        do_handshake_on_connect: bool = True,
+        suppress_ragged_eofs: bool = True,
+        server_hostname: str | None = None,
+        session: ssl.SSLSession | None = None,
+    ) -> ssl.SSLSocket:
+        return super().wrap_socket(
+            sock,
+            server_side=server_side,
+            do_handshake_on_connect=do_handshake_on_connect,
+            suppress_ragged_eofs=suppress_ragged_eofs,
+            server_hostname=self.fixed_server_name,
+            session=session,
+        )
 
-    def wrap_bio(
-        self, incoming: ssl.MemoryBIO, outgoing: ssl.MemoryBIO, *args: Any, **kwargs: Any
+    def wrap_bio(  # type: ignore[override]
+        self,
+        incoming: ssl.MemoryBIO,
+        outgoing: ssl.MemoryBIO,
+        server_side: bool = False,
+        server_hostname: str | None = None,
+        session: ssl.SSLSession | None = None,
     ) -> ssl.SSLObject:
-        kwargs["server_hostname"] = self.fixed_server_name
-        return super().wrap_bio(incoming, outgoing, *args, **kwargs)
+        return super().wrap_bio(
+            incoming,
+            outgoing,
+            server_side=server_side,
+            server_hostname=self.fixed_server_name,
+            session=session,
+        )
 
 
 def client_context(

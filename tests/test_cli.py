@@ -76,8 +76,20 @@ def test_healthcheck_fails_when_nothing_listens(monkeypatch: pytest.MonkeyPatch)
     assert cli.main(["healthcheck", "--port", "1"]) == 1
 
 
-def test_broker_healthz() -> None:
-    response = TestClient(create_broker_app()).get("/healthz")
+def test_broker_healthz(tmp_path: Path) -> None:
+    from mailcow_mcp.config import load_broker_config
+
+    config = load_broker_config(
+        {
+            "MAILCOW_API_URL": "https://nginx-mailcow",
+            "TLS_SERVER_NAME": "mail.example.com",
+            "MAILCOW_API_KEY": "key",
+            "BROKER_SHARED_SECRET": Fernet.generate_key().decode(),
+            "BROKER_SIGNING_KEY": Fernet.generate_key().decode(),
+            "DATA_DIR": str(tmp_path),
+        }
+    )
+    response = TestClient(create_broker_app(config)).get("/healthz")
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
@@ -128,3 +140,6 @@ def test_migrate_users_clients_revoke(
     assert '"audit":"grant_revoke"' in (tmp_path / "audit.log").read_text()
 
     assert cli.main(["revoke", "not-an-address"]) == cli.EXIT_CONFIG
+    assert cli.main(["revoke"]) == cli.EXIT_CONFIG
+    assert cli.main(["revoke", "--all"]) == 0
+    assert "revoked 0 connection(s)" in capsys.readouterr().out

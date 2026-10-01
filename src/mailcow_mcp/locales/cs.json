@@ -26,5 +26,12 @@
   "expired_title": "Platnost přihlášení vypršela",
   "expired_body": "Vraťte se do aplikace a připojte ji znovu.",
   "no_login_title": "Přihlášení není k dispozici",
-  "no_login_body": "Tento server zatím nenabízí žádný způsob přihlášení. Obraťte se na správce."
+  "no_login_body": "Tento server zatím nenabízí žádný způsob přihlášení. Obraťte se na správce.",
+  "mailcow_button": "Přihlásit se přes mailcow",
+  "or_password": "nebo se přihlaste heslem pro aplikace",
+  "privacy_mailcow": "Přihlásíte se na přihlašovací stránce svého mailcow, takže tento server vaše heslo nikdy neuvidí. Vytvoří heslo pro aplikace s názvem „MCP: …“ jen pro IMAP, SMTP a kontakty a uloží ho zde zašifrované. Najdete ho v mailcow v části Hesla aplikací; jeho smazáním aplikaci odpojíte.",
+  "error_mailcow_cancelled": "Přihlášení v mailcow bylo zrušeno.",
+  "error_mailcow_failed": "Přihlášení přes mailcow se nepodařilo. Zkuste to znovu; pokud to nepomůže, obraťte se na správce.",
+  "error_mailcow_unavailable": "mailcow je teď nedostupný. Zkuste to za pár minut znovu.",
+  "error_domain_mailcow": "Tento server nepřijímá přihlášení pro vaši doménu."
 }

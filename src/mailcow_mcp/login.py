@@ -7,6 +7,7 @@ with the mail server and sends the browser back to the client with a code.
 from __future__ import annotations
 
 import hmac
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -20,11 +21,22 @@ from starlette.responses import HTMLResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route, request_response
 
 from mailcow_mcp.audit import AuditLog
+from mailcow_mcp.broker_client import BrokerClient
 from mailcow_mcp.config import AppConfig
+from mailcow_mcp.crypto import new_secret
+from mailcow_mcp.errors import MailError, ServerUnavailable
 from mailcow_mcp.i18n import Translator, pick_language
 from mailcow_mcp.imap import LoginResult, PasswordVerifier
+from mailcow_mcp.mailcow_login import (
+    CALLBACK_PATH,
+    MailcowLoginFailed,
+    MailcowLoginUnavailable,
+    MailcowOAuth,
+)
 from mailcow_mcp.oauth import LOOPBACK_HOSTS, PendingAuthorization, Provider, client_ip
 from mailcow_mcp.ratelimit import RateLimiter
+
+log = logging.getLogger(__name__)
 
 LOGIN_PATH = "/login"
 MAX_FORM_BYTES = 16 * 1024
@@ -63,12 +75,19 @@ class LoginPages:
         verifier: PasswordVerifier,
         audit: AuditLog,
         *,
+        mailcow: MailcowOAuth | None = None,
+        broker: BrokerClient | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
         self.provider = provider
         self.verifier = verifier
         self.audit = audit
+        self.mailcow = mailcow
+        self.broker = broker
+        self.state_cookie = (
+            "__Host-mcp_mailcow" if config.public_url.startswith("https://") else "mcp_mailcow"
+        )
         self.public_origin = _origin(config.public_url)
         self.secure_cookies = config.public_url.startswith("https://")
         self.templates = jinja2.Environment(
@@ -83,7 +102,10 @@ class LoginPages:
 
     def routes(self) -> list[Route]:
         endpoint = RequestBodyLimitMiddleware(request_response(self.handle), MAX_FORM_BYTES)
-        return [Route(LOGIN_PATH, endpoint=endpoint, methods=["GET", "POST"])]
+        routes = [Route(LOGIN_PATH, endpoint=endpoint, methods=["GET", "POST"])]
+        if self.mailcow is not None:
+            routes.append(Route(CALLBACK_PATH, self.mailcow_callback, methods=["GET"]))
+        return routes
 
     # --- rendering -----------------------------------------------------------
 
@@ -133,11 +155,15 @@ class LoginPages:
     ) -> HTMLResponse:
         parts = urlsplit(pending.redirect_uri)
         loopback = parts.hostname in LOOPBACK_HOSTS
+        targets = _origin(pending.redirect_uri)
+        if self.mailcow is not None:
+            targets += " " + _origin(self.mailcow.base_url)
         return self._render(
             "login.html",
             t,
             status_code,
-            form_target=_origin(pending.redirect_uri),
+            form_target=targets,
+            mailcow_login=self.mailcow is not None,
             client_name=pending.client_name,
             redirect_host=parts.netloc if loopback else parts.hostname,
             redirect_loopback=loopback,
@@ -157,7 +183,7 @@ class LoginPages:
             return await self._post(request, t, ip)
         if not self.page_limit.hit(ip):
             return self._message(t, "expired_title", "error_rate_limited", 429)
-        if not self.config.allow_password_login:
+        if not self.config.allow_password_login and self.mailcow is None:
             return self._message(t, "no_login_title", "no_login_body", 503)
         pending = await self.provider.load_pending(request.query_params.get("request", ""))
         if pending is None:
@@ -180,6 +206,8 @@ class LoginPages:
 
         if field("action") == "deny":
             return RedirectResponse(self.provider.deny(pending), status_code=303)
+        if field("action") == "mailcow" and self.mailcow is not None:
+            return self._start_mailcow(t, pending, ip)
         if not self.config.allow_password_login:
             return self._message(t, "no_login_title", "no_login_body", 503)
 
@@ -232,3 +260,110 @@ class LoginPages:
         if redirect is None:
             return self._expired(t)
         return RedirectResponse(redirect, status_code=303, headers={"Cache-Control": "no-store"})
+
+    # --- sign in with mailcow ------------------------------------------------
+
+    def _start_mailcow(self, t: Translator, pending: PendingAuthorization, ip: str) -> Response:
+        assert self.mailcow is not None  # noqa: S101 - checked by the caller
+        if not self.attempt_limit.hit(ip):
+            return self._login_page(t, pending, status_code=429, error=t("error_rate_limited"))
+        state = new_secret()
+        self.provider.set_mailcow_state(pending, state)
+        response = RedirectResponse(self.mailcow.authorize_url(state), status_code=303)
+        # Binds the callback to this browser: mailcow's redirect back must carry the
+        # same state as the cookie (Lax: sent on that top-level navigation).
+        response.set_cookie(
+            self.state_cookie,
+            state,
+            max_age=900,
+            path="/",
+            secure=self.secure_cookies,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
+    def _mailcow_error(
+        self, t: Translator, pending: PendingAuthorization, key: str, status: int
+    ) -> Response:
+        response = self._login_page(t, pending, status_code=status, error=t(key))
+        response.delete_cookie(self.state_cookie, path="/")
+        return response
+
+    async def mailcow_callback(self, request: Request) -> Response:
+        assert self.mailcow is not None and self.broker is not None  # noqa: S101 - mailcow mode
+        t = self._translator(request)
+        ip = client_ip.get() or "unknown"
+        if not self.page_limit.hit(ip):
+            return self._message(t, "expired_title", "error_rate_limited", 429)
+        state = request.query_params.get("state", "")
+        cookie = request.cookies.get(self.state_cookie, "")
+        if not state or not hmac.compare_digest(state, cookie):
+            self.audit("login", result="state_mismatch", ip=ip)
+            return self._expired(t)
+        pending = await self.provider.load_pending_by_state(state)
+        if pending is None:
+            return self._expired(t)
+        if request.query_params.get("error"):
+            # The user declined at mailcow's consent page.
+            self.audit("login", result="mailcow_declined", client=pending.client_name, ip=ip)
+            return self._mailcow_error(t, pending, "error_mailcow_cancelled", 400)
+        code = request.query_params.get("code", "")
+        if not code or len(code) > 1024:
+            return self._mailcow_error(t, pending, "error_mailcow_failed", 400)
+
+        try:
+            token = await self.mailcow.exchange(code)
+            provisioned = await self.broker.provision(token, pending.client_name)
+        except MailcowLoginUnavailable:
+            return self._mailcow_error(t, pending, "error_mailcow_unavailable", 503)
+        except ServerUnavailable:
+            return self._mailcow_error(t, pending, "error_mailcow_unavailable", 503)
+        except (MailcowLoginFailed, MailError) as exc:
+            self.audit(
+                "login",
+                result="mailcow_failed",
+                client=pending.client_name,
+                ip=ip,
+                error=str(exc)[:200],
+            )
+            return self._mailcow_error(t, pending, "error_mailcow_failed", 502)
+        del token  # not kept: the broker has used it
+
+        username = str(provisioned["username"])
+        capability = str(provisioned["capability"])
+        password = str(provisioned["app_password"])
+        domain = username.rpartition("@")[2]
+        if self.config.allowed_domains and domain not in self.config.allowed_domains:
+            await self._undo(capability)
+            self.audit("login", result="domain_not_allowed", mailbox=username, ip=ip)
+            return self._mailcow_error(t, pending, "error_domain_mailcow", 403)
+        # The new app password must work before the client gets a code.
+        if await self.verifier(username, password) is not LoginResult.OK:
+            await self._undo(capability)
+            self.audit("login", result="app_password_rejected", mailbox=username, ip=ip)
+            return self._mailcow_error(t, pending, "error_mailcow_failed", 502)
+
+        redirect = self.provider.complete(
+            pending,
+            username=username,
+            credential=password,
+            login_method="mailcow",
+            app_password_id=int(provisioned["app_password_id"]),
+            capability=capability,
+        )
+        if redirect is None:
+            await self._undo(capability)
+            return self._expired(t)
+        response = RedirectResponse(
+            redirect, status_code=303, headers={"Cache-Control": "no-store"}
+        )
+        response.delete_cookie(self.state_cookie, path="/")
+        return response
+
+    async def _undo(self, capability: str) -> None:
+        assert self.broker is not None  # noqa: S101
+        try:
+            await self.broker.deprovision(capability)
+        except MailError:
+            log.warning("could not delete an app password after a failed sign-in; reconcile will")

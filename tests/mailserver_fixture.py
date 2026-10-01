@@ -42,6 +42,7 @@ class MailServer:
     submission_port: int
     submissions_port: int
     ca_file: Path
+    _app_passwords: tuple[tuple[str, str], ...] = ()
 
     def env(self, **overrides: str) -> dict[str, str]:
         """App settings (generic mode) pointing at this server."""
@@ -66,13 +67,39 @@ class MailServer:
         conn.login(*user)
         return conn
 
+    def set_app_password(self, user: str, password: str | None) -> None:
+        """Make an app password valid for IMAP/SMTP (None removes it)."""
+        lines = dict(self._app_passwords)
+        if password is None:
+            lines.pop(user, None)
+        else:
+            lines[user] = password
+        object.__setattr__(self, "_app_passwords", tuple(lines.items()))
+        content = "".join(f"{u}:{{PLAIN}}{p}\n" for u, p in lines.items())
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-i",
+                self.container,
+                "sh",
+                "-c",
+                "cat > /etc/dovecot/app-passwords",
+            ],
+            input=content.encode(),
+            check=True,
+            capture_output=True,
+        )
+        # Dovecot notices passwd-file changes by mtime, at one-second resolution.
+        time.sleep(1.1)
+
     def logs(self) -> str:
         return subprocess.run(
             ["docker", "logs", self.container], capture_output=True, text=True, check=False
         ).stdout
 
 
-def _make_certificates(directory: Path) -> Path:
+def make_certificates(directory: Path) -> Path:
     now = datetime.datetime.now(datetime.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mailcow-mcp test CA")])
@@ -161,7 +188,7 @@ def mailserver(tmp_path_factory: pytest.TempPathFactory) -> Iterator[MailServer]
     if not _docker_available():
         pytest.skip("Docker is not available")
     certs = tmp_path_factory.mktemp("certs")
-    ca_file = _make_certificates(certs)
+    ca_file = make_certificates(certs)
     subprocess.run(
         ["docker", "build", "-q", "-t", IMAGE, str(CONTEXT_DIR)], check=True, capture_output=True
     )

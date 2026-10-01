@@ -68,10 +68,10 @@ class Database:
         row = self.conn.execute("PRAGMA user_version").fetchone()
         return int(row[0])
 
-    def migrate(self) -> list[str]:
+    def migrate(self, package: str = "mailcow_mcp.migrations") -> list[str]:
         """Apply pending migrations; return the names of those applied."""
         applied: list[str] = []
-        for number, name, sql in available_migrations():
+        for number, name, sql in available_migrations(package):
             if number <= self.version:
                 continue
             # executescript() commits first, so the transaction is part of the script.
@@ -87,9 +87,9 @@ class Database:
         return applied
 
 
-def available_migrations() -> list[tuple[int, str, str]]:
+def available_migrations(package: str = "mailcow_mcp.migrations") -> list[tuple[int, str, str]]:
     found: list[tuple[int, str, str]] = []
-    for entry in resources.files("mailcow_mcp.migrations").iterdir():
+    for entry in resources.files(package).iterdir():
         match = _MIGRATION_RE.match(entry.name)
         if match:
             found.append((int(match.group(1)), entry.name, entry.read_text(encoding="utf-8")))

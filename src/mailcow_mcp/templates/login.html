@@ -23,19 +23,24 @@
 <form method="post" action="/login" class="login">
   <input type="hidden" name="request" value="{{ request_id }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if mailcow_login %}
+  <button type="submit" name="action" value="mailcow" class="primary" formnovalidate>{{ t("mailcow_button") }}</button>
+  {% if password_login %}<p class="divider">{{ t("or_password") }}</p>{% endif %}
+  {% endif %}
   {% if password_login %}
   <label for="email">{{ t("email_label") }}</label>
   <input id="email" name="email" type="email" autocomplete="username" required maxlength="254" value="{{ email }}" autofocus>
   <label for="password">{{ t("password_label") }}</label>
   <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
   <p class="hint">{{ t("password_hint") }}</p>
-  <button type="submit" name="action" value="login" class="primary">{{ t("submit") }}</button>
+  <button type="submit" name="action" value="login" class="{{ 'secondary' if mailcow_login else 'primary' }}">{{ t("submit") }}</button>
   {% endif %}
   <button type="submit" name="action" value="deny" class="secondary" formnovalidate>{{ t("cancel") }}</button>
 </form>
 
 <footer>
-  <p>{{ t("privacy_password") }}</p>
+  {% if mailcow_login %}<p>{{ t("privacy_mailcow") }}</p>{% endif %}
+  {% if password_login %}<p>{{ t("privacy_password") }}</p>{% endif %}
   <p>{{ t("privacy_agent") }}</p>
 </footer>
 {% endblock %}

@@ -79,5 +79,6 @@ button {
 }
 .primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .secondary { background: transparent; color: var(--text); }
+.divider { margin: 10px 0 2px; text-align: center; color: var(--muted); font-size: 14px; }
 footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
 footer p { color: var(--muted); font-size: 13px; }

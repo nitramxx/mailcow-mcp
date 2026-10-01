@@ -431,8 +431,13 @@ class TestPasswordLoginDisabled:
         client_id = mailcow.register()["client_id"]
         _, challenge = pkce_pair()
         page = mailcow.client.get(mailcow.authorize(client_id, challenge))
-        assert page.status_code == 503
+        assert page.status_code == 200
+        assert "Sign in with mailcow" in page.text
         assert 'type="password"' not in page.text
+        assert (
+            "form-action 'self' http://127.0.0.1:3333 https://mail.example.com"
+            in page.headers["content-security-policy"]
+        )
 
 
 class TestTokens:

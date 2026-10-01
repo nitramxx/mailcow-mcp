@@ -9,6 +9,19 @@ versions and are described in `docs/upgrading.md`.
 
 ### Added
 
+- mailcow mode (phase 4): "Sign in with mailcow" on the consent page. The user signs in on
+  mailcow's own login page (with 2FA); the OAuth state is bound to the browser. The mailcow token
+  goes only to the broker, which asks mailcow who it is and creates an app password named
+  `MCP: <client> (<date>, <tag>)` with IMAP, SMTP and DAV access only. The app password is tested
+  with an IMAP login before the client gets a code.
+- The broker (`mailcow-mcp broker`): the only process with the mailcow API key. Shared-secret
+  header, capability tokens signed with `BROKER_SIGNING_KEY` and checked against the broker's own
+  records, per-mailbox rate limits, its own audit log, no generic API passthrough.
+- Revocation lifecycle: revoked, expired or rejected connections queue their app password for
+  deletion through the broker; an hourly `reconcile` deletes `MCP: ` app passwords the app no
+  longer holds. `revoke --all` for uninstalling.
+- `docs/development/mailcow-api.md`: the mailcow API facts mailcow-mcp relies on.
+
 - Reading and follow-up (phase 3): `list_folders`, `list_messages`, `search_messages`,
   `read_message`, `get_attachment`, `find_replies`, `get_thread`, `mark_messages`,
   `move_messages`. Reads never set `\Seen`. HTML-only messages are converted to text.

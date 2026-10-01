@@ -5,8 +5,8 @@ MCP client (Claude, Cursor, VS Code, Claude Code, …) by URL, sign in with your
 and an agent can send, draft, read and follow up on email: attachments, reply tracking, rescuing
 replies from spam and quarantine, delivery status and contacts.
 
-> **Status: early development (phase 3 of 8).** Generic mode works: password sign-in, sending,
-> drafts, attachments, reading, follow-up and Junk rescue. mailcow mode is next. Don't deploy it yet.
+> **Status: early development (phase 4 of 8).** Generic and mailcow sign-in, sending, drafts,
+> attachments, reading, follow-up and Junk rescue work. Don't deploy it yet.
 
 > This is a community project. It is not affiliated with or endorsed by the mailcow team or
 > The Infrastructure Company GmbH.

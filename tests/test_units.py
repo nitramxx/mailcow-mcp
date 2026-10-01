@@ -94,6 +94,9 @@ def test_tls_context_verifies_against_fixed_name() -> None:
     incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
     bio = context.wrap_bio(incoming, outgoing, server_hostname="postfix-mailcow")
     assert bio.server_hostname == "mail.example.com"
+    # asyncio/httpcore pass server_hostname positionally
+    bio = context.wrap_bio(incoming, outgoing, False, "nginx-mailcow")
+    assert bio.server_hostname == "mail.example.com"
 
 
 def test_tls_context_without_verification() -> None:

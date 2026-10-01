@@ -22,7 +22,7 @@ from mailcow_mcp.db import Database
 from mailcow_mcp.imap import LoginResult
 from mailcow_mcp.oauth import Provider
 
-from mailserver_fixture import mailserver  # noqa: F401 - pytest fixture
+pytest_plugins = ["mailserver_fixture", "mailcow_fixtures"]
 
 BASE_URL = "http://localhost:8090"
 REDIRECT_URI = "http://127.0.0.1:3333/callback"
@@ -284,15 +284,28 @@ def make_harness(
     db: Database | None = None,
     *,
     real_login: bool = False,
+    **app_options: Any,
 ) -> Iterator[Harness]:
     """real_login: check passwords with the configured IMAP server instead of a fake."""
     db = db or Database(":memory:")
     clock = Clock()
     stream = io.StringIO()
     fake = None if real_login else (verifier or FakeVerifier())
-    app = create_app(config, db=db, audit=AuditLog(None, stream=stream), verifier=fake, clock=clock)
+    app = create_app(
+        config,
+        db=db,
+        audit=AuditLog(None, stream=stream),
+        verifier=fake,
+        clock=clock,
+        **app_options,
+    )
     with TestClient(app, base_url=BASE_URL) as client:
         yield Harness(client, app.provider, db, clock, fake or FakeVerifier(), stream)
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
 
 
 @pytest.fixture

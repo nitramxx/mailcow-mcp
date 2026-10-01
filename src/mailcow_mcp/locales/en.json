@@ -26,5 +26,12 @@
   "expired_title": "This sign-in has expired",
   "expired_body": "Go back to your app and connect again.",
   "no_login_title": "Sign-in isn't available",
-  "no_login_body": "This server doesn't offer a sign-in method yet. Ask your administrator."
+  "no_login_body": "This server doesn't offer a sign-in method yet. Ask your administrator.",
+  "mailcow_button": "Sign in with mailcow",
+  "or_password": "or sign in with an app password",
+  "privacy_mailcow": "You sign in on your mailcow's own login page, so this server never sees your password. It creates an app password named “MCP: …” for IMAP, SMTP and contacts only, stored encrypted here. You'll find it in mailcow under App passwords; deleting it there disconnects the app.",
+  "error_mailcow_cancelled": "The sign-in at mailcow was cancelled.",
+  "error_mailcow_failed": "Signing in with mailcow didn't work. Try again; if it keeps failing, ask your administrator.",
+  "error_mailcow_unavailable": "mailcow can't be reached right now. Try again in a few minutes.",
+  "error_domain_mailcow": "This server doesn't accept sign-ins for your domain."
 }

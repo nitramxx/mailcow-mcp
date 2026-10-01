@@ -12,23 +12,28 @@ import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 
+import anyio
 import uvicorn
 
 from mailcow_mcp import __version__
 from mailcow_mcp.app import MCP_PATH, create_app
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.broker import create_broker_app
+from mailcow_mcp.broker_client import BrokerClient
 from mailcow_mcp.config import (
     DEFAULT_APP_PORT,
     DEFAULT_BROKER_PORT,
     AppConfig,
     ConfigError,
+    Mode,
     generate_key,
     load_app_config,
     load_broker_config,
 )
 from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
+from mailcow_mcp.errors import MailError
+from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
 from mailcow_mcp.login import LOGIN_PATH, normalize_email
 from mailcow_mcp.oauth import Provider
 
@@ -95,7 +100,7 @@ def cmd_broker(args: argparse.Namespace) -> int:
         log.warning("TLS_VERIFY=false: the mailcow API certificate is not verified")
     log.info("starting broker %s on port %d", __version__, config.port)
     uvicorn.run(
-        create_broker_app(),
+        create_broker_app(config),
         host="0.0.0.0",  # noqa: S104 - internal network only, never published
         port=config.port,
         proxy_headers=False,
@@ -199,8 +204,10 @@ def cmd_revoke(args: argparse.Namespace) -> int:
     config = _app_config()
     if isinstance(config, int):
         return config
-    username = normalize_email(args.mailbox)
-    if username is None:
+    if args.all == bool(args.mailbox):
+        return _fail("give a mailbox, or --all")
+    username = normalize_email(args.mailbox) if args.mailbox else None
+    if args.mailbox and username is None:
         return _fail(f"not an email address: {args.mailbox!r}")
     provider = Provider(
         _open_database(config),
@@ -210,8 +217,41 @@ def cmd_revoke(args: argparse.Namespace) -> int:
         login_url=config.public_url + LOGIN_PATH,
         audit=AuditLog.in_data_dir(config.data_dir),
     )
-    count = provider.revoke_mailbox(username)
-    print(f"revoked {count} connection(s) of {username}")
+    if username is not None:
+        count = provider.revoke_mailbox(username)
+        print(f"revoked {count} connection(s) of {username}")
+    else:
+        mailboxes = [r["username"] for r in provider.db.all("SELECT username FROM mailboxes")]
+        count = sum(provider.revoke_mailbox(m) for m in mailboxes)
+        print(f"revoked {count} connection(s) of {len(mailboxes)} mailbox(es)")
+    if config.mode is Mode.MAILCOW:
+        return _deprovision_now(config, provider, everything=username is None)
+    return 0
+
+
+def _deprovision_now(config: AppConfig, provider: Provider, *, everything: bool) -> int:
+    """Delete the app passwords through the broker now (the app would retry anyway)."""
+
+    async def run() -> tuple[int, int]:
+        broker = BrokerClient(config.broker_url, config.broker_shared_secret or "")
+        try:
+            done = await drain_deprovision_queue(provider, broker)
+            # With --all, the broker also removes "MCP: " app passwords it knows of.
+            extra = await reconcile(provider, broker) if everything else 0
+            return done, extra
+        finally:
+            await broker.aclose()
+
+    try:
+        done, extra = anyio.run(run)
+    except MailError as exc:
+        print(f"mailcow-mcp: {exc} The app retries deleting the app passwords.", file=sys.stderr)
+        return 1
+    left = len(provider.pending_deprovisions())
+    print(
+        f"deleted {done + extra} app password(s) in mailcow"
+        + (f"; {left} still queued" if left else "")
+    )
     return 0
 
 
@@ -262,8 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("users", help="list connected mailboxes").set_defaults(func=cmd_users)
     sub.add_parser("clients", help="list registered MCP clients").set_defaults(func=cmd_clients)
-    revoke = sub.add_parser("revoke", help="disconnect every client of a mailbox")
-    revoke.add_argument("mailbox", help="email address of the mailbox")
+    revoke = sub.add_parser(
+        "revoke", help="disconnect every client of a mailbox (and delete its MCP app passwords)"
+    )
+    revoke.add_argument("mailbox", nargs="?", help="email address of the mailbox")
+    revoke.add_argument("--all", action="store_true", help="every mailbox (before uninstalling)")
     revoke.set_defaults(func=cmd_revoke)
     health = sub.add_parser("healthcheck", help="exit 0 if the local server is healthy")
     health.add_argument(

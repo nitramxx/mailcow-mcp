@@ -27,11 +27,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mailcow_mcp import __version__
 from mailcow_mcp.audit import AuditLog
-from mailcow_mcp.config import AppConfig
+from mailcow_mcp.broker_client import BrokerClient
+from mailcow_mcp.config import AppConfig, Mode
 from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
 from mailcow_mcp.imap import ImapPasswordVerifier, PasswordVerifier
+from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
 from mailcow_mcp.login import LOGIN_PATH, LoginPages
+from mailcow_mcp.mailcow_login import MailcowOAuth
 from mailcow_mcp.oauth import Provider, client_ip
 from mailcow_mcp.ratelimit import RateLimiter
 from mailcow_mcp.services import Services
@@ -41,6 +44,8 @@ log = logging.getLogger(__name__)
 
 MCP_PATH = "/mcp"
 PURGE_INTERVAL_SECONDS = 300
+DEPROVISION_INTERVAL_SECONDS = 60
+RECONCILE_INTERVAL_SECONDS = 3600
 REGISTRATIONS_PER_IP_HOUR = 20
 
 INSTRUCTIONS = (
@@ -222,8 +227,13 @@ def create_app(
     db: Database | None = None,
     audit: AuditLog | None = None,
     verifier: PasswordVerifier | None = None,
+    broker: BrokerClient | None = None,
+    mailcow_oauth: MailcowOAuth | None = None,
     clock: Callable[[], float] = time.time,
 ) -> App:
+    if config.mode is Mode.MAILCOW:
+        broker = broker or BrokerClient(config.broker_url, config.broker_shared_secret or "")
+        mailcow_oauth = mailcow_oauth or MailcowOAuth(config)
     db = db if db is not None else Database.in_data_dir(config.data_dir)
     db.migrate()
     audit = audit if audit is not None else AuditLog.in_data_dir(config.data_dir)
@@ -243,6 +253,8 @@ def create_app(
         provider,
         verifier if verifier is not None else ImapPasswordVerifier(config),
         audit,
+        mailcow=mailcow_oauth,
+        broker=broker,
         clock=clock,
     )
 
@@ -266,7 +278,7 @@ def create_app(
             }
         ),
     )
-    services = Services(config, db, box, provider, audit, clock=clock)
+    services = Services(config, db, box, provider, audit, broker=broker, clock=clock)
     register_tools(mcp, services)
     mcp_app = mcp.streamable_http_app(
         streamable_http_path=MCP_PATH,
@@ -353,12 +365,32 @@ def create_app(
                 log.exception("purging expired data failed")
             await anyio.sleep(PURGE_INTERVAL_SECONDS)
 
+    async def manage_app_passwords(broker: BrokerClient) -> None:
+        last_reconcile = 0.0
+        while True:
+            try:
+                if done := await drain_deprovision_queue(provider, broker):
+                    log.info("deleted %d app password(s) of ended connections", done)
+                if time.monotonic() - last_reconcile >= RECONCILE_INTERVAL_SECONDS:
+                    if deleted := await reconcile(provider, broker):
+                        log.info("reconcile deleted %d unused app password(s)", deleted)
+                    last_reconcile = time.monotonic()
+            except Exception:
+                log.exception("managing app passwords failed")
+            await anyio.sleep(DEPROVISION_INTERVAL_SECONDS)
+
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         async with mcp.session_manager.run(), anyio.create_task_group() as tasks:
             tasks.start_soon(purge_periodically)
+            if broker is not None:
+                tasks.start_soon(manage_app_passwords, broker)
             yield
             tasks.cancel_scope.cancel()
+        if broker is not None:
+            await broker.aclose()
+        if mailcow_oauth is not None:
+            await mailcow_oauth.aclose()
 
     app: ASGIApp = Starlette(routes=routes, lifespan=lifespan)
     app = RegistrationLimitMiddleware(

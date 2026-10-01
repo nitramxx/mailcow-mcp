@@ -15,6 +15,7 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mailcow_mcp.audit import AuditLog
+from mailcow_mcp.broker_client import BrokerClient
 from mailcow_mcp.config import AppConfig
 from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
@@ -82,6 +83,7 @@ class Services:
         *,
         imap: ImapConnector | None = None,
         smtp: SmtpSender | None = None,
+        broker: BrokerClient | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config
@@ -91,6 +93,7 @@ class Services:
         self.audit = audit
         self.imap = imap or ImapConnector(config)
         self.smtp = smtp or SmtpSender(config)
+        self.broker = broker
         self.send_limits = SendLimits(db, config.send_limit_hour, config.send_limit_day, clock)
         self.max_message_bytes = config.max_message_mb * 1024 * 1024
 

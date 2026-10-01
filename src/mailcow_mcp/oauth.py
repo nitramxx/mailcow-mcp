@@ -75,6 +75,11 @@ class PendingAuthorization:
     client: OAuthClientInformationFull
     params: AuthorizationParams
     csrf: str
+    id_hash: str | None = None  # when loaded by mailcow state (the request id isn't known)
+
+    @property
+    def key(self) -> str:
+        return self.id_hash or hash_secret(self.request_id)
 
     @property
     def client_name(self) -> str | None:
@@ -254,11 +259,35 @@ class Provider(
             csrf=row["csrf"],
         )
 
+    def set_mailcow_state(self, pending: PendingAuthorization, state: str) -> None:
+        """Remember the OAuth state sent to mailcow for this sign-in request."""
+        self.db.execute(
+            "UPDATE auth_requests SET mailcow_state_hash = ? WHERE id_hash = ?",
+            (hash_secret(state), pending.key),
+        )
+
+    async def load_pending_by_state(self, state: str) -> PendingAuthorization | None:
+        row = self.db.one(
+            "SELECT id_hash, client_id, params, csrf FROM auth_requests"
+            " WHERE mailcow_state_hash = ? AND expires_at > ?",
+            (hash_secret(state), self.now()),
+        )
+        if row is None:
+            return None
+        client = await self.get_client(row["client_id"])
+        if client is None:
+            return None
+        return PendingAuthorization(
+            request_id="",
+            client=client,
+            params=AuthorizationParams.model_validate_json(row["params"]),
+            csrf=row["csrf"],
+            id_hash=row["id_hash"],
+        )
+
     def _take_pending(self, pending: PendingAuthorization) -> bool:
         """Consume the sign-in request; False if it was already used."""
-        cursor = self.db.execute(
-            "DELETE FROM auth_requests WHERE id_hash = ?", (hash_secret(pending.request_id),)
-        )
+        cursor = self.db.execute("DELETE FROM auth_requests WHERE id_hash = ?", (pending.key,))
         return cursor.rowcount == 1
 
     def deny(self, pending: PendingAuthorization) -> str:
@@ -274,7 +303,14 @@ class Provider(
         )
 
     def complete(
-        self, pending: PendingAuthorization, *, username: str, credential: str, login_method: str
+        self,
+        pending: PendingAuthorization,
+        *,
+        username: str,
+        credential: str,
+        login_method: str,
+        app_password_id: int | None = None,
+        capability: str | None = None,
     ) -> str | None:
         """Create the grant and an authorization code; returns the client redirect.
 
@@ -295,7 +331,8 @@ class Provider(
             ).fetchone()
             grant_id = conn.execute(
                 "INSERT INTO grants (client_id, mailbox_id, login_method, credential_enc, scopes,"
-                " resource, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " resource, created_at, last_used_at, app_password_id, capability_enc)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     pending.client.client_id,
                     mailbox["id"],
@@ -305,6 +342,8 @@ class Provider(
                     self.resource_url,
                     now,
                     now,
+                    app_password_id,
+                    self.box.encrypt(capability) if capability else None,
                 ),
             ).lastrowid
             conn.execute(
@@ -485,10 +524,17 @@ class Provider(
         return (row["username"], row["client_name"]) if row else (None, None)
 
     def revoke_grant(self, grant_id: int, *, reason: str) -> None:
+        """End a grant. A mailcow app password is queued for deletion via the broker."""
         mailbox, client = self._grant_info(grant_id)
         if mailbox is None:
             return
-        self.db.execute("DELETE FROM grants WHERE id = ?", (grant_id,))
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO deprovision_queue (mailbox, capability_enc, queued_at)"
+                " SELECT ?, capability_enc, ? FROM grants WHERE id = ? AND capability_enc IS NOT NULL",
+                (mailbox, self.now(), grant_id),
+            )
+            conn.execute("DELETE FROM grants WHERE id = ?", (grant_id,))
         self.audit(
             "grant_revoke",
             result="ok" if reason == "revoked" else reason,
@@ -507,6 +553,30 @@ class Provider(
             self.revoke_grant(row["id"], reason="revoked")
         self.db.execute("DELETE FROM mailboxes WHERE username = ?", (username,))
         return len(rows)
+
+    def capability_of(self, grant_id: int) -> str | None:
+        row = self.db.one("SELECT capability_enc FROM grants WHERE id = ?", (grant_id,))
+        return self.box.decrypt(row["capability_enc"]) if row and row["capability_enc"] else None
+
+    def live_capabilities(self) -> list[str]:
+        rows = self.db.all("SELECT capability_enc FROM grants WHERE capability_enc IS NOT NULL")
+        return [self.box.decrypt(r["capability_enc"]) for r in rows]
+
+    def pending_deprovisions(self, limit: int = 50) -> list[tuple[int, str, str]]:
+        rows = self.db.all(
+            "SELECT id, mailbox, capability_enc FROM deprovision_queue ORDER BY id LIMIT ?",
+            (limit,),
+        )
+        return [(r["id"], r["mailbox"], self.box.decrypt(r["capability_enc"])) for r in rows]
+
+    def deprovisioned(self, queue_id: int) -> None:
+        self.db.execute("DELETE FROM deprovision_queue WHERE id = ?", (queue_id,))
+
+    def deprovision_failed(self, queue_id: int, error: str) -> None:
+        self.db.execute(
+            "UPDATE deprovision_queue SET attempts = attempts + 1, last_error = ? WHERE id = ?",
+            (error[:500], queue_id),
+        )
 
     def purge_expired(self) -> dict[str, int]:
         """Delete expired data. Grants with no live code or token end here."""
