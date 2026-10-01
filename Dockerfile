@@ -4,7 +4,7 @@
 
 FROM ghcr.io/astral-sh/uv:0.12.21 AS uv
 
-FROM python:3.12-slim-trixie AS build
+FROM python:3.14-slim-trixie AS build
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -20,7 +20,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
 
-FROM python:3.12-slim-trixie
+FROM python:3.14-slim-trixie
 LABEL org.opencontainers.image.title="mailcow-mcp" \
       org.opencontainers.image.description="Self-hosted remote MCP server for mailcow" \
       org.opencontainers.image.source="https://github.com/nitramxx/mailcow-mcp" \
