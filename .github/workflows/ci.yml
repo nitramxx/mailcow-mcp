@@ -27,7 +27,7 @@ jobs:
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - run: shellcheck deploy/mailcow/setup-mailcow.sh
+      - run: shellcheck -S info deploy/mailcow/setup-mailcow.sh
 
   test:
     runs-on: ubuntu-24.04

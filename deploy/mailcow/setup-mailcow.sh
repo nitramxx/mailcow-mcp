@@ -80,7 +80,11 @@ docker network inspect "$NETWORK" >/dev/null 2>&1 \
     || die "docker network $NETWORK not found: is mailcow running?"
 
 # --- addresses -----------------------------------------------------------------
-existing() { [ -f "$KIT_DIR/.env" ] && grep -E "^$1=" "$KIT_DIR/.env" | cut -d= -f2- || true; }
+existing() {
+    if [ -f "$KIT_DIR/.env" ]; then
+        grep -E "^$1=" "$KIT_DIR/.env" | cut -d= -f2- || true
+    fi
+}
 used_ips="$(docker network inspect "$NETWORK" -f '{{range .Containers}}{{.IPv4Address}} {{end}}' | tr ' ' '\n' | cut -d/ -f1)"
 pick_ip() {
     local skip="$1" n candidate
