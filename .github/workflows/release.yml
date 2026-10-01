@@ -42,6 +42,18 @@ jobs:
             exit 1
           fi
 
+      - name: Package the deployment kits
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          for kit in mailcow generic; do
+            dir=$(mktemp -d)
+            cp -a "deploy/$kit/." "$dir/"
+            echo "$version" > "$dir/VERSION"
+            tar -C "$dir" --owner=0 --group=0 -czf "$kit-kit.tar.gz" .
+            sha256sum "$kit-kit.tar.gz" > "$kit-kit.tar.gz.sha256"
+          done
+          tar -tzvf mailcow-kit.tar.gz
+
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -74,3 +86,8 @@ jobs:
         with:
           body_path: release-notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            mailcow-kit.tar.gz
+            mailcow-kit.tar.gz.sha256
+            generic-kit.tar.gz
+            generic-kit.tar.gz.sha256

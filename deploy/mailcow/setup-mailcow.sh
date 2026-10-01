@@ -1,29 +1,98 @@
 #!/usr/bin/env bash
-# Set up mailcow-mcp next to an existing mailcow installation.
+# Set up and update mailcow-mcp next to an existing mailcow installation.
 #
-# Read-only by default: it inspects mailcow and prints what it would write. With --apply it writes
-# .env, app.env and broker.env here and the nginx site file into mailcow's data/conf/nginx/.
-# It never changes mailcow.conf or mailcow's compose files, and never overwrites existing keys.
+# Read-only by default: it checks each step of docs/deploy-mailcow.md against mailcow and prints
+# what it would write. With --apply it writes .env, app.env and broker.env here and the nginx site
+# file into mailcow's data/conf/nginx/. It never changes mailcow.conf or mailcow's compose files,
+# and never overwrites existing keys.
 #
-# Usage: ./setup-mailcow.sh --hostname mcp.example.com [--mailcow-dir /opt/mailcow-dockerized]
-#            [--oauth-client-id ID --oauth-client-secret SECRET] [--api-key KEY]
-#            [--version TAG] [--apply]
+# Usage:
+#   ./setup-mailcow.sh --hostname mcp.example.com [--mailcow-dir /opt/mailcow-dockerized] [--apply]
+#       [--oauth-client-id ID --oauth-client-secret SECRET] [--api-key KEY] [--version TAG]
+#       [--restart]                 also pull the images and restart (and nginx if its file changed)
+#   ./setup-mailcow.sh update [VERSION] [--no-restart]
+#                                   install this release's kit (default: the latest) and restart
+# --hostname and --mailcow-dir are remembered after the first --apply.
 set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAILCOW_DIR="/opt/mailcow-dockerized"
+REPO="nitramxx/mailcow-mcp"
+IMAGE="ghcr.io/$REPO"
+KIT_FILES="docker-compose.yml mailcow-mcp.conf.template setup-mailcow.sh VERSION"
+
+die() { echo "error: $*" >&2; exit 1; }
+note() { printf '  %s\n' "$*"; }
+usage() {
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+env_value() {  # env_value file KEY
+    if [ -f "$1" ]; then
+        grep -E "^$2=" "$1" | tail -n 1 | cut -d= -f2- || true
+    fi
+}
+sha256() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
+
+# --- update: install another release's kit, then run the setup with it ------------------
+if [ "${1:-}" = "update" ]; then
+    shift
+    target="latest"; restart="--restart"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-restart) restart=""; shift ;;
+            -h|--help) usage 0 ;;
+            -*) die "unknown option for update: $1" ;;
+            *) target="${1#v}"; shift ;;
+        esac
+    done
+    [ -f "$KIT_DIR/app.env" ] || die "nothing to update yet: run the setup with --apply first"
+    command -v curl >/dev/null || die "curl is not installed"
+    base="${MCP_KIT_BASE_URL:-https://github.com/$REPO/releases}"
+    if [ "$target" = "latest" ]; then url="$base/latest/download/mailcow-kit.tar.gz"
+    else url="$base/download/v$target/mailcow-kit.tar.gz"; fi
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    curl -fsSL "$url" -o "$work/kit.tar.gz" || die "can't download $url"
+    curl -fsSL "$url.sha256" -o "$work/kit.sha256" || die "can't download $url.sha256"
+    [ "$(sha256 "$work/kit.tar.gz")" = "$(cut -d' ' -f1 "$work/kit.sha256")" ] \
+        || die "checksum mismatch for $url"
+    mkdir "$work/kit"
+    tar -xzf "$work/kit.tar.gz" -C "$work/kit"
+    for f in $KIT_FILES; do
+        [ -f "$work/kit/$f" ] || die "the downloaded kit has no $f"
+    done
+    old="$(cat "$KIT_DIR/VERSION" 2>/dev/null || echo unknown)"
+    new="$(cat "$work/kit/VERSION")"
+    echo "kit $old → $new"
+    for f in docker-compose.yml mailcow-mcp.conf.template; do
+        if ! cmp -s "$KIT_DIR/$f" "$work/kit/$f"; then
+            echo "changes in $f:"
+            diff -u "$KIT_DIR/$f" "$work/kit/$f" | tail -n +3 | sed 's/^/    /' || true
+        fi
+    done
+    for f in $KIT_FILES; do
+        cp "$work/kit/$f" "$KIT_DIR/$f.new"
+        mv "$KIT_DIR/$f.new" "$KIT_DIR/$f"
+    done
+    chmod +x "$KIT_DIR/setup-mailcow.sh"
+    # Pin the image to the kit's version.
+    if [ -f "$KIT_DIR/.env" ]; then
+        sed -i.bak -E "s/^MCP_VERSION=.*/MCP_VERSION=$new/" "$KIT_DIR/.env" && rm -f "$KIT_DIR/.env.bak"
+    fi
+    echo
+    # shellcheck disable=SC2086 # $restart is one flag or nothing
+    exec "$KIT_DIR/setup-mailcow.sh" --apply $restart
+fi
+
+# --- setup ------------------------------------------------------------------------------
+MAILCOW_DIR=""
 MCP_HOSTNAME=""
 OAUTH_CLIENT_ID=""
 OAUTH_CLIENT_SECRET=""
 API_KEY=""
-MCP_VERSION="latest"
+MCP_VERSION="$(cat "$KIT_DIR/VERSION" 2>/dev/null || echo latest)"
 APPLY=0
-IMAGE="ghcr.io/nitramxx/mailcow-mcp"
-
-usage() {
-    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
-    exit "${1:-0}"
-}
+RESTART=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,13 +103,20 @@ while [ $# -gt 0 ]; do
         --api-key) API_KEY="${2:-}"; shift 2 ;;
         --version) MCP_VERSION="${2:-}"; shift 2 ;;
         --apply) APPLY=1; shift ;;
+        --restart) RESTART=1; shift ;;
         -h|--help) usage 0 ;;
         *) echo "unknown option: $1" >&2; usage 2 ;;
     esac
 done
+[ "$RESTART" = 0 ] || [ "$APPLY" = 1 ] || die "--restart needs --apply"
 
-die() { echo "error: $*" >&2; exit 1; }
-note() { printf '  %s\n' "$*"; }
+# Remembered from the first run.
+if [ -z "$MCP_HOSTNAME" ]; then
+    public_url="$(env_value "$KIT_DIR/app.env" PUBLIC_URL)"
+    MCP_HOSTNAME="${public_url#https://}"
+fi
+[ -n "$MAILCOW_DIR" ] || MAILCOW_DIR="$(env_value "$KIT_DIR/.env" MAILCOW_DIR)"
+[ -n "$MAILCOW_DIR" ] || MAILCOW_DIR="/opt/mailcow-dockerized"
 
 [ -n "$MCP_HOSTNAME" ] || die "--hostname is required (the MCP server's own name, e.g. mcp.example.com)"
 [[ "$MCP_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
@@ -267,15 +343,29 @@ fill_empty() {  # fill_empty file KEY value: set KEY only if it's empty in an ex
     fi
 }
 
+add_missing() {  # add_missing file KEY value: append KEY if an existing file lacks it
+    local file="$1" key="$2" value="$3"
+    if [ -f "$file" ] && ! grep -qE "^$key=" "$file"; then
+        if [ "$APPLY" = 1 ]; then
+            printf '%s=%s\n' "$key" "$value" >>"$file"
+            note "added          $key ($file)"
+        else
+            note "would add      $key ($file)"
+        fi
+    fi
+}
+
 echo "files"
 SHARED_SECRET="$(new_key)"
 [ -f "$KIT_DIR/app.env" ] && SHARED_SECRET="$(grep -E '^BROKER_SHARED_SECRET=' "$KIT_DIR/app.env" | cut -d= -f2-)"
 
 write_file "$KIT_DIR/.env" 600 "# compose settings (setup-mailcow.sh)
 MCP_VERSION=$MCP_VERSION
+MAILCOW_DIR=$MAILCOW_DIR
 MAILCOW_NETWORK=$NETWORK
 APP_IP=$APP_IP
 BROKER_IP=$BROKER_IP"
+add_missing "$KIT_DIR/.env" MAILCOW_DIR "$MAILCOW_DIR"
 
 write_file "$KIT_DIR/app.env" 600 "# mailcow-mcp app (setup-mailcow.sh). See docs/configuration.md.
 MODE=mailcow
@@ -307,6 +397,10 @@ listen_ipv6=""
 site="$(sed -e "s|\${HTTPS_PORT}|$HTTPS_PORT|g" -e "s|\${MCP_HOSTNAME}|$MCP_HOSTNAME|g" \
     -e "s|^\${LISTEN_IPV6}$|$listen_ipv6|" "$KIT_DIR/mailcow-mcp.conf.template")"
 SITE_FILE="$MAILCOW_DIR/data/conf/nginx/mailcow-mcp.conf"
+site_changed=1
+if [ -f "$SITE_FILE" ] && [ "$(cat "$SITE_FILE")" = "$site" ]; then
+    site_changed=0
+fi
 if [ "$APPLY" = 1 ]; then
     printf '%s\n' "$site" >"$SITE_FILE"
     note "wrote          $SITE_FILE"
@@ -336,13 +430,34 @@ else
     check 7 todo "missing:$missing_env"
 fi
 
+# --restart: pull and (re)start; nginx only when its site file changed.
+if [ "$RESTART" = 1 ]; then
+    echo "restarting"
+    (cd "$KIT_DIR" && docker compose pull -q && docker compose up -d --remove-orphans) \
+        || die "docker compose failed in $KIT_DIR"
+    if [ "$site_changed" = 1 ] && [ -f "$SITE_FILE" ]; then
+        (cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" restart nginx-mailcow) >/dev/null 2>&1 \
+            && note "restarted nginx-mailcow (its site file changed)"
+    fi
+    for _ in $(seq 45); do
+        states="$(docker compose --project-directory "$KIT_DIR" ps --format '{{.Service}}={{.Health}}' 2>/dev/null)" || states=""
+        if grep -q "^app=healthy" <<<"$states" && grep -q "^broker=healthy" <<<"$states"; then
+            break
+        fi
+        sleep 2
+    done
+fi
+
 # 9. Running
 running=""
 if [ -f "$KIT_DIR/.env" ]; then
     running="$(docker compose --project-directory "$KIT_DIR" ps --format '{{.Service}}={{.Health}}' 2>/dev/null)" || running=""
 fi
 if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$running"; then
-    if curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" >/dev/null 2>&1; then
+    health="$(curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" 2>/dev/null)" || health=""
+    if [ -n "$health" ] && ! grep -q '"broker":"ok"' <<<"$health"; then
+        check 9 todo "the app can't reach the broker (BROKER_URL in app.env must be http://mcp-broker:8091, as in docker-compose.yml)"
+    elif [ -n "$health" ]; then
         check 9 ok "app and broker healthy; https://$MCP_HOSTNAME/healthz answers through mailcow's nginx"
     else
         check 9 todo "app and broker healthy, but mailcow's nginx doesn't route $MCP_HOSTNAME yet"

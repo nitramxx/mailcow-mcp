@@ -7,6 +7,28 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-02
+
+### Fixed
+
+- After a failed mailcow sign-in, "Sign in with mailcow" on the error page said the sign-in had
+  expired; it now retries the same request.
+
+### Added
+
+- In mailcow mode `/healthz` reports whether the app reaches the broker (`"broker": "ok"`), and
+  `setup-mailcow.sh` checks it.
+
+### Changed
+
+- The deployment kits are release downloads (`mailcow-kit.tar.gz`, `generic-kit.tar.gz`, with
+  SHA-256 checksums); no git clone or copying from a source folder. The kit's `VERSION` pins the
+  image.
+- `setup-mailcow.sh update [VERSION]` installs a release's kit (checksum verified, changes shown,
+  env files never touched), pins the image, restarts and runs the checks. `--restart` pulls and
+  (re)starts after `--apply`, restarting mailcow's nginx only when its site file changed.
+  `--hostname` and `--mailcow-dir` are remembered after the first run.
+
 ## [0.1.1] - 2026-10-02
 
 ### Fixed
@@ -66,6 +88,7 @@ First release.
   user guide.
 - Multi-arch image (linux/amd64, linux/arm64) on GHCR with SBOM and provenance.
 
-[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/nitramxx/mailcow-mcp/releases/tag/v0.1.0

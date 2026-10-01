@@ -22,6 +22,7 @@
 
 <form method="post" action="/login" class="login">
   <input type="hidden" name="request" value="{{ request_id }}">
+  {% if resume %}<input type="hidden" name="resume" value="{{ resume }}">{% endif %}
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if mailcow_login %}
   <button type="submit" name="action" value="mailcow" class="primary" formnovalidate>{{ t("mailcow_button") }}</button>

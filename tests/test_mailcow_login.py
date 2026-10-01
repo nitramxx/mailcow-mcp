@@ -23,6 +23,7 @@ from conftest import (
     Harness,
     McpSession,
     ToolFailed,
+    form_value,
     pkce_pair,
     query_of,
 )
@@ -77,6 +78,10 @@ def connect(app: Harness, certs: Path) -> tuple[str, dict[str, Any]]:
 def in_app(app: Harness, job: Any, broker: BrokerSetup) -> Any:
     """Run a background job on the app's event loop (where its HTTP clients live)."""
     return app.client.portal.call(job, app.provider, broker.client)  # type: ignore[union-attr]
+
+
+def test_healthz_reports_the_broker(app: Harness) -> None:
+    assert app.client.get("/healthz").json()["broker"] == "ok"
 
 
 def test_consent_page_offers_mailcow(app: Harness, running_mailcow: RunningMailcow) -> None:
@@ -159,6 +164,29 @@ def test_declined_at_mailcow(app: Harness, mailcow: MockMailcow, certs: Path) ->
     assert response.status_code == 400
     assert "cancelled" in response.text
     assert mailcow.app_passwords == []
+
+
+def test_retry_after_a_failed_callback(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
+    mailcow.deny = True
+    _, response = sign_in(app, certs)
+    assert response.status_code == 400
+    # The error page offers "Sign in with mailcow" again, and it works.
+    mailcow.deny = False
+    retry = app.client.post(
+        "/login",
+        data={
+            "request": form_value(response.text, "request"),
+            "resume": form_value(response.text, "resume"),
+            "csrf": form_value(response.text, "csrf"),
+            "action": "mailcow",
+        },
+        follow_redirects=False,
+    )
+    assert retry.status_code == 303, retry.text
+    back = at_mailcow(retry.headers["location"], certs)
+    done = app.client.get(back.headers["location"].removeprefix(BASE_URL), follow_redirects=False)
+    assert done.status_code == 303
+    assert done.headers["location"].startswith(REDIRECT_URI + "?code=")
 
 
 def test_allowed_domains_apply(

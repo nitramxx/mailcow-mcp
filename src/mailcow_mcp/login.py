@@ -174,6 +174,7 @@ class LoginPages:
             redirect_host=parts.netloc if loopback else parts.hostname,
             redirect_loopback=loopback,
             request_id=pending.request_id,
+            resume=pending.resume or "",
             csrf=pending.csrf,
             password_login=self.config.allow_password_login,
             error=error,
@@ -208,7 +209,11 @@ class LoginPages:
             value = form.get(name)
             return value if isinstance(value, str) else ""
 
-        pending = await self.provider.load_pending(field("request"))
+        if field("request"):
+            pending = await self.provider.load_pending(field("request"))
+        else:
+            # A retry from the error page after mailcow's redirect back.
+            pending = await self.provider.load_pending_by_state(field("resume"))
         if pending is None or not hmac.compare_digest(field("csrf"), pending.csrf):
             return self._expired(t)
 

@@ -38,6 +38,14 @@ class BrokerClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def reachable(self) -> bool:
+        """Whether the broker answers its health check (no secret needed)."""
+        try:
+            response = await self._http.get("/healthz", timeout=3)
+        except httpx.HTTPError:
+            return False
+        return response.status_code == 200
+
     async def call(self, operation: str, **body: Any) -> dict[str, Any]:
         try:
             response = await self._http.post(f"/v1/{operation}", json=body)

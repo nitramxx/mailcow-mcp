@@ -76,6 +76,7 @@ class PendingAuthorization:
     params: AuthorizationParams
     csrf: str
     id_hash: str | None = None  # when loaded by mailcow state (the request id isn't known)
+    resume: str | None = None  # that state: lets the page's form continue this request
 
     @property
     def key(self) -> str:
@@ -283,6 +284,7 @@ class Provider(
             params=AuthorizationParams.model_validate_json(row["params"]),
             csrf=row["csrf"],
             id_hash=row["id_hash"],
+            resume=state,
         )
 
     def _take_pending(self, pending: PendingAuthorization) -> bool:

@@ -343,7 +343,11 @@ def create_app(
         except Exception:
             log.exception("database check failed")
             return JSONResponse({"status": "error", "role": "app"}, status_code=503)
-        return JSONResponse({"status": "ok", "role": "app", "version": __version__})
+        body: dict[str, str] = {"status": "ok", "role": "app", "version": __version__}
+        if broker is not None:
+            # Reported, not fatal: the app still serves what it can without the broker.
+            body["broker"] = "ok" if await broker.reachable() else "unreachable"
+        return JSONResponse(body)
 
     async def index(request: Request) -> Response:
         return PlainTextResponse(

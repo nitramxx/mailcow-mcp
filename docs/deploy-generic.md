@@ -17,10 +17,9 @@ certificate automatically.
 ## Steps
 
 ```sh
-git clone https://github.com/nitramxx/mailcow-mcp /opt/mailcow-mcp-src
-mkdir -p /opt/mailcow-mcp && cp -r /opt/mailcow-mcp-src/deploy/generic/. /opt/mailcow-mcp/
-cd /opt/mailcow-mcp
-cp .env.example .env            # set MCP_HOSTNAME
+sudo mkdir -p /opt/mailcow-mcp && sudo chown "$USER" /opt/mailcow-mcp && cd /opt/mailcow-mcp
+curl -fsSL https://github.com/nitramxx/mailcow-mcp/releases/latest/download/generic-kit.tar.gz | tar xz
+cp .env.example .env            # set MCP_HOSTNAME; MCP_VERSION=$(cat VERSION) to pin
 cp app.env.example app.env      # set IMAP_*, SMTP_*, ALLOWED_DOMAINS
 sed -i "s|^ENC_KEY=.*|ENC_KEY=$(docker run --rm ghcr.io/nitramxx/mailcow-mcp generate-key)|" app.env
 chmod 600 app.env

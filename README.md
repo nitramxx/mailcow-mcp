@@ -44,20 +44,19 @@ Tools: `send_email`, `save_draft`, `send_draft`, `delete_draft`, `list_folders`,
 On the mailcow server, with a DNS record `mcp.example.com` pointing to it:
 
 ```sh
-git clone https://github.com/nitramxx/mailcow-mcp /opt/mailcow-mcp-src
-mkdir -p /opt/mailcow-mcp && cp /opt/mailcow-mcp-src/deploy/mailcow/* /opt/mailcow-mcp/
-cd /opt/mailcow-mcp
-./setup-mailcow.sh --hostname mcp.example.com      # read-only: shows what it will do
+sudo mkdir -p /opt/mailcow-mcp && sudo chown "$USER" /opt/mailcow-mcp && cd /opt/mailcow-mcp
+curl -fsSL https://github.com/nitramxx/mailcow-mcp/releases/latest/download/mailcow-kit.tar.gz | tar xz
+sudo ./setup-mailcow.sh --hostname mcp.example.com      # read-only: checks and shows what it will do
 ```
 
 It checks each step against mailcow (DNS, certificate, OAuth2 app, API key, Fail2ban allowlist)
 and lists what's left, with exact values. Once the mailcow-side steps show ✓:
 
 ```sh
-./setup-mailcow.sh --hostname mcp.example.com --apply   # writes .env, app.env, broker.env here
-docker compose up -d
-(cd /opt/mailcow-dockerized && docker compose restart nginx-mailcow)
+sudo ./setup-mailcow.sh --hostname mcp.example.com --apply --restart   # writes the config, starts
 ```
+
+Updating later: `sudo ./setup-mailcow.sh update`.
 
 The full guide, with a check and troubleshooting for every step:
 [docs/deploy-mailcow.md](docs/deploy-mailcow.md). Connecting clients: [docs/clients.md](docs/clients.md).

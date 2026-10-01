@@ -237,8 +237,9 @@ def test_containers_are_healthy_and_isolated(applied: FakeMailcow, nginx: str) -
             raise AssertionError(f"containers not healthy:\n{ps}\n{logs}")
         time.sleep(2)
 
-    # Through mailcow's nginx: the app answers.
-    assert '"role":"app"' in _curl(nginx, "https://127.0.0.1/healthz")
+    # Through mailcow's nginx: the app answers, and reaches the broker.
+    health = _curl(nginx, "https://127.0.0.1/healthz")
+    assert '"role":"app"' in health and '"broker":"ok"' in health
     # The broker isn't reachable from mailcow's network...
     broker_ip = next(
         line.split("=")[1]
@@ -406,3 +407,79 @@ def test_setup_checks_mailcow_state(tmp_path: Path, image: str) -> None:
     finally:
         run("docker", "compose", "down", "-v", cwd=directory, env=compose, check=False)
         run("docker", "network", "rm", network, check=False)
+
+
+def _serve_releases(root: Path) -> Iterator[str]:
+    import functools
+    import http.server
+    import threading
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+
+
+def _release(root: Path, version: str, *, extra_line: str = "", bad_checksum: bool = False) -> None:
+    """A release like release.yml builds it, under <root>/download/v<version>/."""
+    import hashlib
+    import tarfile
+
+    staging = root / f"staging-{version}"
+    shutil.copytree(KIT, staging)
+    (staging / "VERSION").write_text(f"{version}\n")
+    if extra_line:
+        compose = staging / "docker-compose.yml"
+        compose.write_text(compose.read_text() + f"\n# {extra_line}\n")
+    target = root / "download" / f"v{version}"
+    target.mkdir(parents=True)
+    archive = target / "mailcow-kit.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for path in sorted(staging.iterdir()):
+            tar.add(path, arcname=f"./{path.name}")
+    digest = "0" * 64 if bad_checksum else hashlib.sha256(archive.read_bytes()).hexdigest()
+    (target / "mailcow-kit.tar.gz.sha256").write_text(f"{digest}  mailcow-kit.tar.gz\n")
+
+
+def test_update_installs_a_release_kit(applied: FakeMailcow, tmp_path: Path) -> None:
+    _release(tmp_path, "9.9.9", extra_line="new in 9.9.9")
+    _release(tmp_path, "6.6.6", bad_checksum=True)
+    app_env = (applied.kit / "app.env").read_text()
+    broker_env = (applied.kit / "broker.env").read_text()
+    for base in _serve_releases(tmp_path):
+        env = {**applied.compose_env, "MCP_KIT_BASE_URL": base}
+        bad = run(
+            "bash",
+            str(applied.kit / "setup-mailcow.sh"),
+            "update",
+            "6.6.6",
+            "--no-restart",
+            env=env,
+            check=False,
+        )
+        assert bad.returncode != 0 and "checksum mismatch" in bad.stderr
+        assert not (applied.kit / "VERSION").exists()
+
+        out = run(
+            "bash",
+            str(applied.kit / "setup-mailcow.sh"),
+            "update",
+            "v9.9.9",
+            "--no-restart",
+            env=env,
+        ).stdout
+    assert "kit unknown → 9.9.9" in out
+    assert "+# new in 9.9.9" in out  # the change is shown
+    assert (applied.kit / "VERSION").read_text().strip() == "9.9.9"
+    assert "# new in 9.9.9" in (applied.kit / "docker-compose.yml").read_text()
+    dotenv = (applied.kit / ".env").read_text()
+    assert "MCP_VERSION=9.9.9" in dotenv and f"MAILCOW_DIR={applied.directory}" in dotenv
+    # Settings and keys are untouched; the setup ran again with the remembered hostname.
+    assert (applied.kit / "app.env").read_text() == app_env
+    assert (applied.kit / "broker.env").read_text() == broker_env
+    assert "MCP URL:        https://mcp.test/mcp" in out
+    assert "checks" in out

@@ -72,12 +72,13 @@ from step 1 must already resolve. Forcing a new attempt:
 
 ## 3. Get the kit and run the setup helper
 
+Each release has the kit as a download: the compose file, the nginx template and the setup
+helper, matching that release's image.
+
 ```sh
-git clone https://github.com/nitramxx/mailcow-mcp /opt/mailcow-mcp-src
-mkdir -p /opt/mailcow-mcp
-cp /opt/mailcow-mcp-src/deploy/mailcow/* /opt/mailcow-mcp/
-cd /opt/mailcow-mcp
-./setup-mailcow.sh --hostname mcp.example.com --mailcow-dir /opt/mailcow-dockerized
+sudo mkdir -p /opt/mailcow-mcp && sudo chown "$USER" /opt/mailcow-mcp && cd /opt/mailcow-mcp
+curl -fsSL https://github.com/nitramxx/mailcow-mcp/releases/latest/download/mailcow-kit.tar.gz | tar xz
+sudo ./setup-mailcow.sh --hostname mcp.example.com --mailcow-dir /opt/mailcow-dockerized
 ```
 
 The helper is **read-only** unless you add `--apply`. It reads `mailcow.conf`, finds mailcow's
@@ -130,11 +131,12 @@ would lose access. mailcow-mcp has its own limits instead (failed sign-ins per I
 
 ```sh
 cd /opt/mailcow-mcp
-./setup-mailcow.sh --hostname mcp.example.com --mailcow-dir /opt/mailcow-dockerized --apply
-docker compose up -d
-docker compose ps                        # both healthy after ~20 s
-cd /opt/mailcow-dockerized && docker compose restart nginx-mailcow
+sudo ./setup-mailcow.sh --hostname mcp.example.com --mailcow-dir /opt/mailcow-dockerized --apply --restart
 ```
+
+`--restart` pulls the images, starts both containers, restarts mailcow's nginx (only when its
+site file changed) and waits until they're healthy. Without it: `docker compose up -d` here, then
+`docker compose restart nginx-mailcow` in mailcow's directory.
 
 `--apply` writes three files **in `/opt/mailcow-mcp`, next to `docker-compose.yml`** (mode 600):
 
@@ -147,7 +149,8 @@ if nginx rejects it, it's renamed to `.disabled` so mailcow's nginx keeps workin
 again never replaces existing keys; it only fills in values that are still empty (for example the
 OAuth2 client, once you've created it).
 
-Then run `./setup-mailcow.sh --hostname mcp.example.com` once more: step 7 should show ✓.
+The run ends with the checks again; step 9 should now show ✓. After this first run the helper
+remembers the hostname and mailcow's directory, so later runs are just `sudo ./setup-mailcow.sh`.
 
 The nginx file only routes `mcp.example.com` to the app, never the broker. It resolves the app at
 request time, so **mailcow's nginx starts and keeps working when mailcow-mcp is stopped**: MCP
@@ -205,8 +208,14 @@ docker compose logs -f app broker                # includes the audit log (JSON 
 
 ## Upgrading
 
-See [upgrading.md](upgrading.md). In short: set `MCP_VERSION` in `.env` (or keep `latest`), then
-`docker compose pull && docker compose up -d`.
+```sh
+cd /opt/mailcow-mcp
+sudo ./setup-mailcow.sh update          # the latest release (or: update 0.2.0)
+```
+
+It downloads that release's kit, verifies its checksum, shows what changed in the compose and nginx
+files, replaces only the kit files (never `.env`, `app.env`, `broker.env`), pins the image to that
+version, restarts, and runs the checks. See [upgrading.md](upgrading.md).
 
 ## Uninstall
 
@@ -215,6 +224,7 @@ cd /opt/mailcow-mcp
 docker compose exec app mailcow-mcp revoke --all   # deletes all "MCP: " app passwords
 docker compose down -v                             # -v also deletes the data volumes
 rm /opt/mailcow-dockerized/data/conf/nginx/mailcow-mcp.conf
+sudo rm -r /opt/mailcow-mcp
 cd /opt/mailcow-dockerized && docker compose restart nginx-mailcow
 ```
 
