@@ -226,6 +226,17 @@ new_key() {
 port_suffix=""
 [ "$HTTPS_PORT" = "443" ] || port_suffix=":$HTTPS_PORT"
 
+# Run with sudo, files here still belong to whoever owns this directory (e.g. you, not root).
+KIT_OWNER=""
+if [ "$(id -u)" = 0 ]; then
+    KIT_OWNER="$(stat -c '%u:%g' "$KIT_DIR" 2>/dev/null || stat -f '%u:%g' "$KIT_DIR")"
+fi
+own() {
+    if [ -n "$KIT_OWNER" ]; then
+        chown "$KIT_OWNER" "$1"
+    fi
+}
+
 write_file() {  # path mode content
     local path="$1" mode="$2" content="$3"
     if [ -e "$path" ]; then
@@ -235,6 +246,7 @@ write_file() {  # path mode content
     if [ "$APPLY" = 1 ]; then
         (umask 077; printf '%s\n' "$content" >"$path")
         chmod "$mode" "$path"
+        own "$path"
         note "wrote          $path"
     else
         note "would write    $path"
@@ -248,7 +260,7 @@ fill_empty() {  # fill_empty file KEY value: set KEY only if it's empty in an ex
     if [ "$APPLY" = 1 ]; then
         local tmp; tmp="$(mktemp "$file.XXXXXX")"
         awk -v k="$key" -v v="$value" 'BEGIN { FS = OFS = "=" } $1 == k && $2 == "" { print k "=" v; next } { print }' "$file" >"$tmp"
-        chmod 600 "$tmp"; mv "$tmp" "$file"
+        chmod 600 "$tmp"; own "$tmp"; mv "$tmp" "$file"
         note "filled in      $key ($file)"
     else
         note "would fill in  $key ($file)"
@@ -327,7 +339,7 @@ fi
 # 7. Running
 running=""
 if [ -f "$KIT_DIR/.env" ]; then
-    running="$(cd "$KIT_DIR" && docker compose ps --format '{{.Service}}={{.Health}}' 2>/dev/null || true)"
+    running="$(docker compose --project-directory "$KIT_DIR" ps --format '{{.Service}}={{.Health}}' 2>/dev/null)" || running=""
 fi
 if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$running"; then
     if curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" >/dev/null 2>&1; then

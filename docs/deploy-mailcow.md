@@ -33,6 +33,13 @@ Throughout this guide `mcp.example.com` is the new hostname for the MCP server a
 - Docker with the compose plugin (mailcow already needs it).
 - `git`, `openssl` (usually installed).
 
+**Ownership:** keep `/opt/mailcow-dockerized` as mailcow installs it (root): mailcow's update
+script and containers expect that. `/opt/mailcow-mcp` can belong to your own user; run
+`setup-mailcow.sh` with `sudo` (it reads `mailcow.conf` and mailcow's certificate, and writes the
+nginx file into mailcow's directory). The files it writes into `/opt/mailcow-mcp` get that
+directory's owner. `docker compose` works as your user if it's in the `docker` group, which is
+effectively root access, so this is about tidiness, not a security boundary.
+
 ## 1. DNS
 
 Create `A` (and `AAAA`, if mailcow has IPv6) records for `mcp.example.com` pointing to the mailcow
