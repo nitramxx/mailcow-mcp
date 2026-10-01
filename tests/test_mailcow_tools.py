@@ -12,10 +12,10 @@ from pathlib import Path
 import httpx
 import pytest
 import radicale.config
-from radicale.app import Application
 from a2wsgi import WSGIMiddleware
 from mailcow_fixtures import BrokerSetup, make_mailcow_harness
 from mock_mailcow import MockMailcow, RunningMailcow
+from radicale.app import Application
 from test_mailcow_login import in_app, sign_in
 
 from mailcow_mcp.contacts import CardDav, parse_vcards
