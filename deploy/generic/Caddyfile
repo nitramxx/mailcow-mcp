@@ -1,0 +1,12 @@
+# Automatic HTTPS for the MCP server's hostname.
+{$MCP_HOSTNAME} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy app:8090 {
+		# Streamable HTTP uses server-sent events: don't buffer.
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+		}
+	}
+}

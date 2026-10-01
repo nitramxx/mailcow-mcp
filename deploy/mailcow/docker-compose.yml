@@ -65,8 +65,9 @@ services:
         ipv4_address: ${BROKER_IP}
       internal:
         ipv4_address: ${BROKER_INTERNAL_IP:-172.31.253.11}
+        # Only on this network (the service name "broker" resolves on both).
         aliases:
-          - broker
+          - mcp-broker
 
 volumes:
   app-data:

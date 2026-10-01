@@ -1,0 +1,62 @@
+# mailcow-mcp in generic mode: any IMAP/SMTP server, password sign-in, Caddy for TLS.
+# Copy app.env.example to app.env and fill it in. See docs/deploy-generic.md.
+
+name: mailcow-mcp
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      MCP_HOSTNAME: ${MCP_HOSTNAME:?set MCP_HOSTNAME in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      edge:
+        ipv4_address: 172.31.254.10
+
+  app:
+    image: ghcr.io/nitramxx/mailcow-mcp:${MCP_VERSION:-latest}
+    command: ["serve"]
+    restart: unless-stopped
+    env_file: app.env
+    environment:
+      MODE: generic
+      PUBLIC_URL: https://${MCP_HOSTNAME}
+      # Only Caddy may set X-Forwarded-For.
+      TRUSTED_PROXIES: 172.31.254.10
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+    volumes:
+      - app-data:/data
+    healthcheck:
+      test: ["CMD", "mailcow-mcp", "healthcheck", "--port", "8090"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      - edge
+
+volumes:
+  app-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.31.254.0/24

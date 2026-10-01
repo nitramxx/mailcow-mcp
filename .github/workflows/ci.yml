@@ -27,6 +27,7 @@ jobs:
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
       - run: uv run mypy
+      - run: shellcheck deploy/mailcow/setup-mailcow.sh
 
   test:
     runs-on: ubuntu-24.04
@@ -55,7 +56,24 @@ jobs:
       - name: Install WeasyPrint system libraries
         run: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0
       - run: uv sync --locked
-      - run: uv run pytest -m integration
+      - run: uv run pytest -m "integration and not kit"
+
+  kit:
+    # The deployment kit with Docker: setup script, compose file, nginx with the app down.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Build the image
+        run: docker build -t ghcr.io/nitramxx/mailcow-mcp:kit-test .
+      - run: uv run pytest -m kit
+        env:
+          MCP_KIT_TESTS: "1"
 
   image:
     runs-on: ubuntu-24.04

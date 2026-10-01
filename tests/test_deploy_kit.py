@@ -56,13 +56,13 @@ class FakeMailcow:
 @pytest.fixture(scope="module")
 def image() -> str:
     if not os.environ.get("MCP_KIT_TESTS"):
-        pytest.skip("set MCP_KIT_TESTS=1 to run the deployment kit tests (work in progress)")
+        pytest.skip("set MCP_KIT_TESTS=1 to run the deployment kit tests (they build the image)")
     if (
         shutil.which("docker") is None
         or run("docker", "compose", "version", check=False).returncode != 0
     ):
         pytest.skip("Docker with the compose plugin is not available")
-    if run("docker", "image", "inspect", f"{IMAGE}:{TAG}", check=False).returncode != 0:
+    if not os.environ.get("CI"):  # CI builds it in an earlier step
         run("docker", "build", "-q", "-t", f"{IMAGE}:{TAG}", str(ROOT))
     return f"{IMAGE}:{TAG}"
 
@@ -135,6 +135,7 @@ def test_apply_writes_config_and_keeps_keys(fake_mailcow: FakeMailcow) -> None:
         "s3cret",
         "--api-key",
         "KEY-1",
+        "--apply",
     )
     app_env = (fake_mailcow.kit / "app.env").read_text()
     broker_env = (fake_mailcow.kit / "broker.env").read_text()
@@ -261,7 +262,7 @@ def test_containers_are_healthy_and_isolated(applied: FakeMailcow, nginx: str) -
         app,
         "python",
         "-c",
-        "import urllib.request; print(urllib.request.urlopen('http://broker:8091/healthz', timeout=5).read().decode())",
+        "import urllib.request; print(urllib.request.urlopen('http://mcp-broker:8091/healthz', timeout=5).read().decode())",
     ).stdout
     assert '"role":"broker"' in reached
     # Hardening as configured.

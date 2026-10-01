@@ -7,6 +7,20 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+### Added (phase 7)
+
+- Deployment kit for mailcow (`deploy/mailcow`): compose file (app + broker, non-root, read-only
+  root filesystem, no capabilities, health checks, broker reachable only over an internal
+  network), nginx site file that resolves the app at request time (mailcow's nginx keeps working
+  when mailcow-mcp is down), and `setup-mailcow.sh` (read-only unless `--apply`; detects mailcow's
+  network and version, picks fixed addresses, generates keys, prints the remaining steps).
+- Generic kit with Caddy (`deploy/generic`).
+- `MAILCOW_INTERNAL_URL` (token exchange and contacts via nginx-mailcow, no hairpin NAT) and
+  `HOST`.
+- Documentation: deployment guides, clients, tools, configuration, security, upgrading, and a
+  Czech user guide.
+- CI job testing the kit with Docker; shellcheck.
+
 ### Security
 
 - Access logs no longer contain query strings (they carried sign-in request ids and mailcow OAuth
