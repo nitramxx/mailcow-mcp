@@ -15,8 +15,9 @@ uv run ruff format .          # format
 uv run mypy                   # type check (strict)
 ```
 
-PDF rendering uses WeasyPrint, which needs Pango. On macOS: `brew install pango` and run tests
-with `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`. On Debian/Ubuntu:
+PDF rendering uses WeasyPrint, which needs Pango. On macOS: `brew install pango`; `scripts/check`
+sets `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` for you (set it yourself when running pytest
+directly). On Debian/Ubuntu:
 `apt install libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0`.
 
 Integration tests start a real Dovecot + Postfix server from `tests/mailserver` in Docker
