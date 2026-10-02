@@ -7,6 +7,8 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
 ### Added
 
 - Several mailboxes in one connection: `list_mailboxes`, `add_mailbox` (a one-time link to sign
@@ -203,7 +205,8 @@ First release.
   user guide.
 - Multi-arch image (linux/amd64, linux/arm64) on GHCR with SBOM and provenance.
 
-[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.3...v0.1.4
