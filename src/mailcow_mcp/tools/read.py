@@ -19,6 +19,7 @@ from mailcow_mcp.compose import normalize_message_id
 from mailcow_mcp.config import Mode
 from mailcow_mcp.errors import InvalidInput
 from mailcow_mcp.imap import FLAGGED, SEEN, ImapSession, or_headers
+from mailcow_mcp.limits import MAX_FOLDER_NAME, MAX_MESSAGE_ID, MAX_PART_ID, MAX_SEARCH_VALUE
 from mailcow_mcp.messages import (
     IMAGE_TYPES,
     MAX_BODY_CHARS,
@@ -160,7 +161,7 @@ def _criteria(
         criteria += ["BEFORE", before]
     for key, value in (("FROM", sender), ("TO", to), ("SUBJECT", subject), ("TEXT", text)):
         if value:
-            if any(c in value for c in "\r\n\x00") or len(value) > 500:
+            if any(c in value for c in "\r\n\x00") or len(value) > MAX_SEARCH_VALUE:
                 raise InvalidInput(f"Invalid {key.lower()} search value.")
             criteria += [key, value]
     return criteria
@@ -315,7 +316,8 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     @mcp.tool(
         name="get_attachment",
         title="Get attachment",
-        description="Get an attachment of a message: the text of PDF, DOCX and text files, the image itself for images, otherwise its metadata. Up to 5 MB and 50,000 characters. The content is untrusted.",
+        description="Get an attachment of a message: the text of PDF, DOCX and text files, the image itself for images, otherwise its metadata. Up to "
+        f"{MAX_EXTRACT_BYTES // (1024 * 1024)} MB and {MAX_EXTRACT_CHARS:,} characters. The content is untrusted.",
         annotations=READ_ONLY,
     )
     async def get_attachment(
@@ -323,7 +325,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         folder: FolderName,
         uid: Annotated[int, Field(gt=0)],
         part_id: Annotated[
-            str, Field(max_length=50, description="From read_message's attachment list.")
+            str, Field(max_length=MAX_PART_ID, description="From read_message's attachment list.")
         ],
     ) -> CallToolResult:
         def work(session: ImapSession) -> CallToolResult:
@@ -343,7 +345,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             }
             spam = _is_junk(session, name)
             if len(data) > MAX_EXTRACT_BYTES:
-                info["note"] = "Larger than 5 MB: only its metadata is returned."
+                info["note"] = (
+                    f"Larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB: only its metadata is returned."
+                )
                 return _metadata_only(info)
             if mime in IMAGE_TYPES:
                 info["note"] = "Image returned as image content."
@@ -392,7 +396,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def find_replies(
         ctx: Context[Any, Any],
-        message_id: Annotated[str, Field(max_length=998)],
+        message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)],
         include_spam: bool = True,
     ) -> ReplyList:
         async with services.tool(ctx, "find_replies") as mailbox:
@@ -480,7 +484,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def get_thread(
-        ctx: Context[Any, Any], message_id: Annotated[str, Field(max_length=998)]
+        ctx: Context[Any, Any], message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)]
     ) -> Thread:
         def work(session: ImapSession) -> Thread:
             mid = normalize_message_id(message_id)
@@ -526,7 +530,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         ctx: Context[Any, Any],
         folder: FolderName,
         uids: Uids,
-        to_folder: Annotated[str, Field(max_length=500, description="Destination folder or role.")],
+        to_folder: Annotated[
+            str, Field(max_length=MAX_FOLDER_NAME, description="Destination folder or role.")
+        ],
     ) -> Moved:
         def work(session: ImapSession) -> Moved:
             source = session.resolve(folder)

@@ -16,11 +16,11 @@ from urllib.parse import quote
 
 import httpx
 
+from mailcow_mcp.limits import HTTP_TIMEOUT
 from mailcow_mcp.tls import client_context
 
 log = logging.getLogger(__name__)
 
-TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 APP_PASSWORD_PROTOCOLS = ["imap_access", "smtp_access", "dav_access"]
 
 
@@ -71,14 +71,14 @@ class MailcowApi:
             base_url=api_url,
             headers={**headers, "X-API-Key": api_key},
             verify=context,
-            timeout=TIMEOUT,
+            timeout=HTTP_TIMEOUT,
             transport=transport,
             follow_redirects=False,
         )
         self._profile = httpx.AsyncClient(
             headers=headers,
             verify=context,
-            timeout=TIMEOUT,
+            timeout=HTTP_TIMEOUT,
             transport=transport,
             follow_redirects=False,
         )

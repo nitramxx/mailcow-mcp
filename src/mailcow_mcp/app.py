@@ -38,7 +38,7 @@ from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
 from mailcow_mcp.imap import ImapPasswordVerifier, PasswordVerifier
 from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
-from mailcow_mcp.login import LOGIN_PATH, LoginPages
+from mailcow_mcp.login import LOGIN_PATH, STYLESHEET_PATH, LoginPages
 from mailcow_mcp.mailcow_login import MailcowOAuth
 from mailcow_mcp.oauth import Provider
 from mailcow_mcp.ratelimit import RateLimiter, client_key
@@ -219,7 +219,7 @@ def _static_route() -> Route:
             css, media_type="text/css", headers={"Cache-Control": "public, max-age=3600"}
         )
 
-    return Route("/static/style.css", stylesheet, methods=["GET"])
+    return Route(STYLESHEET_PATH, stylesheet, methods=["GET"])
 
 
 class App:

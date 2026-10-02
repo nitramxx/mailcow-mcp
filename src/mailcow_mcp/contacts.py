@@ -18,6 +18,7 @@ import httpx
 
 from mailcow_mcp.config import AppConfig
 from mailcow_mcp.errors import ContactsAuthFailed, MailError, ServerUnavailable
+from mailcow_mcp.limits import HTTP_TIMEOUT
 from mailcow_mcp.tls import client_context
 
 log = logging.getLogger(__name__)
@@ -166,7 +167,7 @@ class CardDav:
             auth=(username, password),
             headers=self.headers,
             verify=self.verify,
-            timeout=httpx.Timeout(20.0, connect=10.0),
+            timeout=HTTP_TIMEOUT,
             transport=self.transport,
             follow_redirects=True,
             max_redirects=5,

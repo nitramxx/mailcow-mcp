@@ -9,6 +9,7 @@ import httpx
 
 from mailcow_mcp.broker_protocol import SECRET_HEADER
 from mailcow_mcp.errors import MailError, NotFound, ServerUnavailable
+from mailcow_mcp.limits import BROKER_TIMEOUT
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class BrokerClient:
         self._http = httpx.AsyncClient(
             base_url=url,
             headers={SECRET_HEADER: shared_secret},
-            timeout=httpx.Timeout(30.0, connect=5.0),
+            timeout=BROKER_TIMEOUT,
             transport=transport,
             follow_redirects=False,
         )

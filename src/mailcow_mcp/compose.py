@@ -20,6 +20,13 @@ from markdown_it import MarkdownIt
 from pydantic import BaseModel, ConfigDict, Field
 
 from mailcow_mcp.errors import InvalidInput, LimitExceeded
+from mailcow_mcp.limits import (
+    MAX_FILENAME,
+    MAX_FOLDER_NAME,
+    MAX_MIME_TYPE,
+    MAX_PART_ID,
+    MAX_REFERENCES,
+)
 from mailcow_mcp.messages import header, header_values
 from mailcow_mcp.mime import check_attachment, parse_message, safe_filename
 
@@ -30,6 +37,9 @@ MAX_PDF_MARKDOWN_CHARS = 200_000  # per PDF; rendering is the expensive part
 MAX_PDF_MARKDOWN_TOTAL = 500_000  # all PDFs of one message
 MAX_SUBJECT_LENGTH = 500
 MAX_NAME_LENGTH = 100
+MAX_ADDRESS_LENGTH = 400  # one recipient, display name included
+MAX_7BIT_LINE = 900  # SMTP allows 998; leave room for header folding and CRLF
+BASE64_SLACK = 4096  # line breaks and padding in base64 input
 
 # Building: content is encoded here, so quoted-printable wraps at 76 (RFC 2045) and nothing is
 # left as 8bit.
@@ -75,15 +85,15 @@ class _Strict(BaseModel):
 class InlineAttachment(_Strict):
     """File content supplied directly."""
 
-    filename: str = Field(max_length=255)
+    filename: str = Field(max_length=MAX_FILENAME)
     content_base64: str = Field(description="The file content, base64-encoded.")
-    mime_type: str = Field(max_length=255, description="e.g. application/pdf, image/png")
+    mime_type: str = Field(max_length=MAX_MIME_TYPE, description="e.g. application/pdf, image/png")
 
 
 class MessagePart(_Strict):
-    folder: str = Field(max_length=500)
+    folder: str = Field(max_length=MAX_FOLDER_NAME)
     uid: int = Field(gt=0)
-    part_id: str = Field(max_length=50, description="From read_message's attachment list.")
+    part_id: str = Field(max_length=MAX_PART_ID, description="From read_message's attachment list.")
 
 
 class ForwardedAttachment(_Strict):
@@ -93,7 +103,7 @@ class ForwardedAttachment(_Strict):
 
 
 class PdfSpec(_Strict):
-    filename: str = Field(max_length=255)
+    filename: str = Field(max_length=MAX_FILENAME)
     markdown: str = Field(
         max_length=MAX_PDF_MARKDOWN_CHARS, description="Document content in Markdown."
     )
@@ -172,7 +182,7 @@ def normalize_address(addr: str) -> str | None:
 
 def parse_address(value: str, field_name: str) -> Address:
     """One address, optionally with a display name: ``Jan Novák <jan@example.cz>``."""
-    header_text(value, field_name, 400)
+    header_text(value, field_name, MAX_ADDRESS_LENGTH)
     parsed = getaddresses([value], strict=True)
     if len(parsed) != 1 or not parsed[0][1]:
         raise InvalidInput(f"{field_name}: {value!r} is not one email address.")
@@ -198,7 +208,7 @@ def normalize_message_id(value: str) -> str:
 
 
 def decode_base64(value: str, filename: str, max_bytes: int) -> bytes:
-    if len(value) > max_bytes * 4 // 3 + 4096:
+    if len(value) > max_bytes * 4 // 3 + BASE64_SLACK:
         raise LimitExceeded(f"{filename} is larger than the message size limit.")
     try:
         return base64.b64decode("".join(value.split()), validate=True)
@@ -301,7 +311,7 @@ def transfer_encoding(text: str) -> str:
     Lines are split only at CR/LF, as on the wire (str.splitlines would also split at form
     feeds and other separators that don't end an SMTP line).
     """
-    if text.isascii() and all(len(line) <= 900 for line in _LINE_BREAK.split(text)):
+    if text.isascii() and all(len(line) <= MAX_7BIT_LINE for line in _LINE_BREAK.split(text)):
         return "7bit"
     return "quoted-printable"
 
@@ -369,7 +379,7 @@ def compose(
     if draft.in_reply_to:
         parent = normalize_message_id(draft.in_reply_to)
         message["In-Reply-To"] = parent
-        chain = [r for r in draft.references if _MESSAGE_ID_RE.match(r)][-20:]
+        chain = [r for r in draft.references if _MESSAGE_ID_RE.match(r)][-MAX_REFERENCES:]
         if parent not in chain:
             chain.append(parent)
         message["References"] = " ".join(chain)

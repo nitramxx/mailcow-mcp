@@ -12,6 +12,7 @@ from mailcow_mcp.compose import default_from_name, normalize_message_id
 from mailcow_mcp.config import Mode
 from mailcow_mcp.contacts import CardDav
 from mailcow_mcp.errors import ContactsAuthFailed, CredentialsRejected
+from mailcow_mcp.limits import MAX_CONTACT_QUERY, MAX_MESSAGE_ID
 from mailcow_mcp.services import Services
 from mailcow_mcp.tools.common import READ_ONLY
 from mailcow_mcp.untrusted import LISTING_NOTICE, SERVER_NOTICE
@@ -132,7 +133,7 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def delivery_status(
-        ctx: Context[Any, Any], message_id: Annotated[str, Field(max_length=998)]
+        ctx: Context[Any, Any], message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)]
     ) -> DeliveryStatus:
         async with services.tool(ctx, "delivery_status") as mailbox:
             mid = normalize_message_id(message_id)
@@ -174,7 +175,8 @@ def _register_contacts(mcp: MCPServer[Any], services: Services, carddav: CardDav
         annotations=READ_ONLY,
     )
     async def find_contacts(
-        ctx: Context[Any, Any], query: Annotated[str, Field(min_length=2, max_length=200)]
+        ctx: Context[Any, Any],
+        query: Annotated[str, Field(min_length=2, max_length=MAX_CONTACT_QUERY)],
     ) -> Contacts:
         async with services.tool(ctx, "find_contacts") as mailbox:
             try:

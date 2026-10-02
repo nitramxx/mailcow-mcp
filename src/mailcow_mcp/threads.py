@@ -7,13 +7,13 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from mailcow_mcp.imap import ImapSession, or_headers
+from mailcow_mcp.limits import MAX_REFERENCES
 from mailcow_mcp.messages import addresses, body_text, header, message_date, truncate
 from mailcow_mcp.mime import parse_message
 from mailcow_mcp.untrusted import wrap
 
 MAX_MESSAGES = 30  # the newest of a longer thread
 MAX_CANDIDATES = 500  # per folder
-MAX_SEARCH_IDS = 20  # Message-IDs searched for per round
 MAX_BYTES = 50 * 1024 * 1024  # all bodies of one thread together
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
 MAX_BODY_CHARS = 10_000
@@ -77,7 +77,7 @@ def _related(
     for _round in range(2):
         searches = [
             (name, value)
-            for value in sorted(ids)[:MAX_SEARCH_IDS]
+            for value in sorted(ids)[:MAX_REFERENCES]
             for name in ("Message-ID", "References", "In-Reply-To")
         ]
         for folder in folders:

@@ -15,6 +15,7 @@ from mailcow_mcp.broker_client import RevokedCapability
 from mailcow_mcp.config import Mode
 from mailcow_mcp.errors import MailError
 from mailcow_mcp.imap import ImapSession
+from mailcow_mcp.limits import MAX_FOLDER_NAME, MAX_UIDS
 from mailcow_mcp.messages import SUMMARY_HEADERS, MessageSummary, summarize
 from mailcow_mcp.mime import parse_message
 from mailcow_mcp.services import Mailbox, Services
@@ -27,9 +28,6 @@ READ_ONLY = ToolAnnotations(
 CHANGES_FLAGS = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
-
-MAX_FOLDER_NAME = 500
-MAX_UIDS = 100
 
 FolderName = Annotated[
     str,

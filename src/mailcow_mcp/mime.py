@@ -11,6 +11,7 @@ from email.policy import default as default_policy
 from mailcow_mcp.errors import InvalidInput, NotFound
 
 MAX_FILENAME_LENGTH = 150
+MAX_EXTENSION_LENGTH = 10  # longer "extensions" are just part of a long name
 MAX_PART_DEPTH = 20  # deeper multiparts are treated as one opaque part
 
 _MIME_TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
@@ -81,7 +82,7 @@ def safe_filename(name: str | None, default: str = "attachment") -> str:
         return default
     if len(name) > MAX_FILENAME_LENGTH:
         stem, dot, ext = name.rpartition(".")
-        if dot and 0 < len(ext) <= 10:
+        if dot and 0 < len(ext) <= MAX_EXTENSION_LENGTH:
             name = stem[: MAX_FILENAME_LENGTH - len(ext) - 1] + "." + ext
         else:
             name = name[:MAX_FILENAME_LENGTH]

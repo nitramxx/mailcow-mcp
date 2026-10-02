@@ -10,9 +10,10 @@ from pydantic import BaseModel, Field
 
 from mailcow_mcp.config import Mode
 from mailcow_mcp.imap import ImapSession
+from mailcow_mcp.limits import MAX_UIDS
 from mailcow_mcp.messages import iso_timestamp
 from mailcow_mcp.services import Services
-from mailcow_mcp.tools.common import MAX_UIDS, READ_ONLY, Moved, move, quarantine, summaries
+from mailcow_mcp.tools.common import READ_ONLY, Moved, move, quarantine, summaries
 from mailcow_mcp.untrusted import LISTING_NOTICE, SPAM_NOTICE
 
 

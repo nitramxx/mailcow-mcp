@@ -24,6 +24,7 @@ from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
 from mailcow_mcp.errors import CredentialsRejected, LimitExceeded, MailError
 from mailcow_mcp.imap import ImapConnector, ImapSession
+from mailcow_mcp.limits import DAY, HOUR
 from mailcow_mcp.oauth import MailboxAccessToken, Provider
 from mailcow_mcp.smtp import SmtpSender
 
@@ -56,7 +57,7 @@ class SendLimits:
         row = conn.execute(
             "SELECT count(*) AS day, coalesce(sum(sent_at > ?), 0) AS hour FROM sent_log"
             " WHERE mailbox = ? AND sent_at > ?",
-            (now - 3600, username, now - 86400),
+            (now - HOUR, username, now - DAY),
         ).fetchone()
         day, hour = (row["day"], row["hour"]) if row else (0, 0)
         if hour >= self.per_hour:
@@ -78,7 +79,7 @@ class SendLimits:
         """
         now = int(self._clock())
         with self.db.transaction() as conn:
-            conn.execute("DELETE FROM sent_log WHERE sent_at <= ?", (now - 86400,))
+            conn.execute("DELETE FROM sent_log WHERE sent_at <= ?", (now - DAY,))
             self._check(conn, username, now)
             cursor = conn.execute(
                 "INSERT INTO sent_log (mailbox, sent_at, recipients) VALUES (?, ?, 0)",

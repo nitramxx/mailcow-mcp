@@ -21,11 +21,11 @@ from imapclient.exceptions import IMAPClientError, LoginError
 
 from mailcow_mcp.config import AppConfig, Security
 from mailcow_mcp.errors import CredentialsRejected, MailError, NotFound, ServerUnavailable
+from mailcow_mcp.limits import IMAP_TIMEOUT_SECONDS
 from mailcow_mcp.tls import client_context
 
 log = logging.getLogger(__name__)
 
-TIMEOUT_SECONDS = 30
 
 # RFC 5530 response codes: these mean the credentials are wrong or no longer valid...
 _REJECTED_CODES = ("[AUTHENTICATIONFAILED]", "[AUTHORIZATIONFAILED]", "[EXPIRED]")
@@ -341,7 +341,7 @@ class ImapConnector:
                 port=self.port,
                 ssl=self.security is Security.SSL,
                 ssl_context=self.context,
-                timeout=TIMEOUT_SECONDS,
+                timeout=IMAP_TIMEOUT_SECONDS,
             )
         except (OSError, ssl.SSLError, IMAPClientError) as exc:
             log.warning("IMAP connection to %s:%d failed: %s", self.host, self.port, exc)

@@ -43,6 +43,7 @@ from mailcow_mcp.broker_protocol import SECRET_HEADER
 from mailcow_mcp.capability import Capability, CapabilitySigner, InvalidCapability
 from mailcow_mcp.config import BrokerConfig
 from mailcow_mcp.db import Database
+from mailcow_mcp.limits import DAY, HOUR
 from mailcow_mcp.mailcow_api import MailcowApi, MailcowError, MailcowUnavailable, TokenRejected
 from mailcow_mcp.ratelimit import RateLimiter
 
@@ -58,10 +59,11 @@ LOG_LINES = 10_000
 LOG_CACHE_SECONDS = 15
 ALIAS_CACHE_SECONDS = 300
 PROVISIONS_PER_MAILBOX_HOUR = 10
+MAX_OAUTH_TOKEN = 4096
 RECONCILE_GRACE_SECONDS = 600
 # Rows of deleted app passwords are kept this long (their mailboxes are still
 # checked for leftover "MCP: " app passwords), then forgotten.
-DEPROVISIONED_RETENTION_SECONDS = 30 * 86400
+DEPROVISIONED_RETENTION_SECONDS = 30 * DAY
 
 _NAME_UNSAFE = re.compile(r"[^\w .()\-]", re.UNICODE)
 _QUEUE_ID = re.compile(r"^([0-9A-Za-z]{6,20}): (.*)$")
@@ -173,7 +175,7 @@ class Broker:
         self._locks: dict[str, anyio.Lock] = {}
         self._aliases: dict[str, tuple[float, list[str]]] = {}
         self._logs: tuple[float, list[dict[str, Any]]] | None = None
-        self.provision_limit = RateLimiter(PROVISIONS_PER_MAILBOX_HOUR, 3600, clock=clock)
+        self.provision_limit = RateLimiter(PROVISIONS_PER_MAILBOX_HOUR, HOUR, clock=clock)
         self.operation_limit = RateLimiter(120, 60, clock=clock)
 
     # --- helpers -------------------------------------------------------------
@@ -219,7 +221,7 @@ class Broker:
 
     async def provision(self, body: dict[str, Any]) -> dict[str, Any]:
         token = body.get("mailcow_oauth_token")
-        if not isinstance(token, str) or not token or len(token) > 4096:
+        if not isinstance(token, str) or not token or len(token) > MAX_OAUTH_TOKEN:
             raise BrokerError(400, "invalid_request", "mailcow_oauth_token is required")
         client_name = body.get("client_name")
         client_name = client_name if isinstance(client_name, str) else None

@@ -20,7 +20,7 @@
 
 {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 
-<form method="post" action="/login" class="login">
+<form method="post" action="{{ login_path }}" class="login">
   <input type="hidden" name="request" value="{{ request_id }}">
   {% if resume %}<input type="hidden" name="resume" value="{{ resume }}">{% endif %}
   <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -30,9 +30,9 @@
   {% endif %}
   {% if password_login %}
   <label for="email">{{ t("email_label") }}</label>
-  <input id="email" name="email" type="email" autocomplete="username" required maxlength="254" value="{{ email }}" autofocus>
+  <input id="email" name="email" type="email" autocomplete="username" required maxlength="{{ max_email }}" value="{{ email }}" autofocus>
   <label for="password">{{ t("password_label") }}</label>
-  <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+  <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="{{ max_password }}">
   <p class="hint">{{ t("password_hint") }}</p>
   <button type="submit" name="action" value="login" class="{{ 'secondary' if mailcow_login else 'primary' }}">{{ t("submit") }}</button>
   {% endif %}

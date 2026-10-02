@@ -15,6 +15,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 
 from mailcow_mcp.config import AppConfig
+from mailcow_mcp.limits import HTTP_TIMEOUT
 from mailcow_mcp.tls import client_context
 
 log = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class MailcowOAuth:
         self._http = httpx.AsyncClient(
             headers=headers,
             verify=context,
-            timeout=httpx.Timeout(20.0, connect=10.0),
+            timeout=HTTP_TIMEOUT,
             transport=transport,
             follow_redirects=False,
         )

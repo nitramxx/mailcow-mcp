@@ -47,6 +47,7 @@ from mailcow_mcp.request_context import client_ip
 log = logging.getLogger(__name__)
 
 LOGIN_PATH = "/login"
+STYLESHEET_PATH = "/static/style.css"
 MAX_FORM_BYTES = 16 * 1024
 MAX_EMAIL_LENGTH = 254
 MAX_PASSWORD_LENGTH = 1024
@@ -141,7 +142,14 @@ class LoginPages:
         **context: Any,
     ) -> HTMLResponse:
         html = self.templates.get_template(template).render(
-            lang=t.lang, t=t, instance_name=self.config.instance_name, **context
+            lang=t.lang,
+            t=t,
+            instance_name=self.config.instance_name,
+            stylesheet=STYLESHEET_PATH,
+            login_path=LOGIN_PATH,
+            max_email=MAX_EMAIL_LENGTH,
+            max_password=MAX_PASSWORD_LENGTH,
+            **context,
         )
         # The form posts to us, and we redirect to the client: CSP form-action
         # covers that redirect, so the client's origin must be listed too.

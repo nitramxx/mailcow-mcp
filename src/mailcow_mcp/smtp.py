@@ -16,11 +16,10 @@ import aiosmtplib
 
 from mailcow_mcp.config import AppConfig, Security
 from mailcow_mcp.errors import CredentialsRejected, MailError, SendRejected, ServerUnavailable
+from mailcow_mcp.limits import SMTP_TIMEOUT_SECONDS
 from mailcow_mcp.tls import client_context
 
 log = logging.getLogger(__name__)
-
-TIMEOUT_SECONDS = 60
 
 
 def auth_error(exc: aiosmtplib.SMTPAuthenticationError) -> MailError:
@@ -68,7 +67,7 @@ class SmtpSender:
             use_tls=self.security is Security.SSL,
             start_tls=self.security is Security.STARTTLS,
             tls_context=self.context,
-            timeout=TIMEOUT_SECONDS,
+            timeout=SMTP_TIMEOUT_SECONDS,
             local_hostname=self.helo_name,
         )
         try:

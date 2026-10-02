@@ -60,7 +60,7 @@ Generate keys and secrets with `docker run --rm ghcr.io/nitramxx/mailcow-mcp gen
 | Variable | Default | |
 |---|---|---|
 | `DATA_DIR` | `/data` | Database and audit log. Must be writable. |
-| `PORT` | `8090` | |
+| `PORT` | `8090` | Leave it in the kits: their health checks, nginx and Caddy files expect 8090 (broker: 8091). |
 | `HOST` | `0.0.0.0` | Address to listen on. |
 
 ## broker (`mailcow-mcp broker`)
