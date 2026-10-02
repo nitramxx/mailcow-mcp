@@ -136,19 +136,12 @@ class Services:
         token = self._token(ctx)
         if token is None:
             raise ToolError(SIGNED_OUT)
-        row = self.db.one(
-            "SELECT g.credential_enc, m.username, c.client_name FROM grants g"
-            " JOIN mailboxes m ON m.id = g.mailbox_id JOIN clients c ON c.client_id = g.client_id"
-            " WHERE g.id = ?",
-            (token.grant_id,),
-        )
-        if row is None:
+        credentials = self.provider.credentials_of(token.grant_id)
+        if credentials is None:
             raise ToolError(SIGNED_OUT)
+        username, password, client_name = credentials
         return Mailbox(
-            grant_id=token.grant_id,
-            username=row["username"],
-            password=self.box.decrypt(row["credential_enc"]),
-            client_name=row["client_name"],
+            grant_id=token.grant_id, username=username, password=password, client_name=client_name
         )
 
     async def run_imap[T](self, mailbox: Mailbox, work: Callable[[ImapSession], T]) -> T:

@@ -223,7 +223,7 @@ def cmd_revoke(args: argparse.Namespace) -> int:
         count = provider.revoke_mailbox(username)
         print(f"revoked {count} connection(s) of {username}")
     else:
-        mailboxes = [r["username"] for r in provider.db.all("SELECT username FROM mailboxes")]
+        mailboxes = provider.mailboxes()
         count = sum(provider.revoke_mailbox(m) for m in mailboxes)
         print(f"revoked {count} connection(s) of {len(mailboxes)} mailbox(es)")
     if config.mode is Mode.MAILCOW:

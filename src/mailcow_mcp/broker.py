@@ -39,6 +39,7 @@ from starlette.routing import Route
 
 from mailcow_mcp import __version__
 from mailcow_mcp.audit import AuditLog
+from mailcow_mcp.broker_protocol import SECRET_HEADER
 from mailcow_mcp.capability import Capability, CapabilitySigner, InvalidCapability
 from mailcow_mcp.config import BrokerConfig
 from mailcow_mcp.db import Database
@@ -47,7 +48,6 @@ from mailcow_mcp.ratelimit import RateLimiter
 
 log = logging.getLogger(__name__)
 
-SECRET_HEADER = "X-Broker-Secret"  # noqa: S105 - a header name
 NAME_PREFIX = "MCP: "
 MIGRATIONS = "mailcow_mcp.broker_migrations"
 MAX_BODY_BYTES = 64 * 1024
@@ -81,6 +81,11 @@ def app_password_name(client_name: str | None, today: str, tag: str) -> str:
     """``MCP: Claude (2026-10-01, a1b2)``: recognisable in mailcow, unique enough to match."""
     cleaned = " ".join(_NAME_UNSAFE.sub("", client_name or "").split())[:40] or "MCP client"
     return f"{NAME_PREFIX}{cleaned} ({today}, {tag})"
+
+
+def _is_ours(app_password: dict[str, Any]) -> bool:
+    """Created by the broker (the user can take one over by renaming it)."""
+    return str(app_password.get("name", "")).startswith(NAME_PREFIX)
 
 
 def generate_password(policy: dict[str, int]) -> str:
@@ -280,7 +285,7 @@ class Broker:
         """
         existing = {p["id"]: p for p in await self.api.app_passwords(mailbox)}
         found = existing.get(app_password_id)
-        ours = found is not None and str(found.get("name", "")).startswith(NAME_PREFIX)
+        ours = found is not None and _is_ours(found)
         if ours:
             await self.api.delete_app_passwords([app_password_id])
         self.db.execute(
@@ -358,7 +363,7 @@ class Broker:
         orphans = [
             p["id"]
             for p in await self.api.app_passwords(mailbox)
-            if str(p.get("name", "")).startswith(NAME_PREFIX) and p["id"] not in keep
+            if _is_ours(p) and p["id"] not in keep
         ]
         if orphans:
             await self.api.delete_app_passwords(orphans)

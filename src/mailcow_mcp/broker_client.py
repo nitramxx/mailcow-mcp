@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from mailcow_mcp.broker import SECRET_HEADER
+from mailcow_mcp.broker_protocol import SECRET_HEADER
 from mailcow_mcp.errors import MailError, NotFound, ServerUnavailable
 
 log = logging.getLogger(__name__)

@@ -40,9 +40,9 @@ from mailcow_mcp.oauth import (
     PendingAuthorization,
     Provider,
     canonical_url,
-    client_ip,
 )
 from mailcow_mcp.ratelimit import RateLimiter, client_key
+from mailcow_mcp.request_context import client_ip
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class LoginPages:
         self.audit = audit
         self.mailcow = mailcow
         self.broker = broker
-        self.secure_cookies = config.public_url.startswith("https://")
+        self.secure_cookies = config.https
         prefix = "__Host-" if self.secure_cookies else ""
         self.state_cookie_prefix = prefix + "mcp_mailcow_"
         self.browser_cookie = prefix + "mcp_login"

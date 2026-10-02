@@ -11,7 +11,6 @@ and reusing a rotated refresh token or a spent code revokes it too.
 
 from __future__ import annotations
 
-import contextvars
 import json
 import logging
 import time
@@ -38,6 +37,7 @@ from pydantic import AnyUrl
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.crypto import Box, hash_secret, new_secret
 from mailcow_mcp.db import Database
+from mailcow_mcp.request_context import client_ip
 
 log = logging.getLogger(__name__)
 
@@ -56,9 +56,6 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # Control, format (zero-width, bidi overrides), separator, private-use and surrogate
 # characters: invisible or misleading in a client name shown on the consent page.
 _HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cs"})
-
-# The client IP of the current HTTP request, set by the app's middleware.
-client_ip: contextvars.ContextVar[str | None] = contextvars.ContextVar("client_ip", default=None)
 
 
 class MailboxAccessToken(AccessToken):
@@ -589,6 +586,22 @@ class Provider(
             self.revoke_grant(row["id"], reason="revoked")
         self.db.execute("DELETE FROM mailboxes WHERE username = ?", (username,))
         return len(rows)
+
+    def mailboxes(self) -> list[str]:
+        """Every mailbox with a connection (or one that just ended)."""
+        return [r["username"] for r in self.db.all("SELECT username FROM mailboxes")]
+
+    def credentials_of(self, grant_id: int) -> tuple[str, str, str | None] | None:
+        """(mailbox, password or app password, client name) of an active grant."""
+        row = self.db.one(
+            "SELECT g.credential_enc, m.username, c.client_name FROM grants g"
+            " JOIN mailboxes m ON m.id = g.mailbox_id JOIN clients c ON c.client_id = g.client_id"
+            " WHERE g.id = ?",
+            (grant_id,),
+        )
+        if row is None:
+            return None
+        return row["username"], self.box.decrypt(row["credential_enc"]), row["client_name"]
 
     def capability_of(self, grant_id: int) -> str | None:
         row = self.db.one("SELECT capability_enc FROM grants WHERE id = ?", (grant_id,))

@@ -40,8 +40,9 @@ from mailcow_mcp.imap import ImapPasswordVerifier, PasswordVerifier
 from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
 from mailcow_mcp.login import LOGIN_PATH, LoginPages
 from mailcow_mcp.mailcow_login import MailcowOAuth
-from mailcow_mcp.oauth import Provider, client_ip
+from mailcow_mcp.oauth import Provider
 from mailcow_mcp.ratelimit import RateLimiter, client_key
+from mailcow_mcp.request_context import client_ip
 from mailcow_mcp.services import Services
 from mailcow_mcp.tools import register_tools
 
@@ -478,5 +479,5 @@ def create_app(
     )
     app = AuthorizeIssuerMiddleware(app, config.public_url)
     app = McpCORSMiddleware(app)
-    app = SecurityHeadersMiddleware(app, hsts=config.public_url.startswith("https://"))
+    app = SecurityHeadersMiddleware(app, hsts=config.https)
     return App(ClientIPMiddleware(app), provider, services)

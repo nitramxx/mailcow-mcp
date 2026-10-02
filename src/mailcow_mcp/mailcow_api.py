@@ -47,6 +47,11 @@ def _message(response: httpx.Response) -> str:
     return ""
 
 
+def _is_active(row: dict[str, Any]) -> bool:
+    """mailcow's "active" flag, which comes as 1, "1" or "true" depending on the endpoint."""
+    return str(row.get("active", "1")) in ("1", "True", "true")
+
+
 class MailcowApi:
     def __init__(
         self,
@@ -152,7 +157,7 @@ class MailcowApi:
         username = data.get("username")
         if response.status_code != 200 or not data.get("success") or not isinstance(username, str):
             raise TokenRejected("mailcow did not accept the token")
-        if str(data.get("active", "1")) not in ("1", "True", "true"):
+        if not _is_active(data):
             raise TokenRejected("the mailbox is inactive")
         return username.strip().lower()
 
@@ -211,7 +216,7 @@ class MailcowApi:
             address = str(row.get("address", "")).strip().lower()
             if not address or address.startswith("@"):
                 continue  # catch-all
-            if str(row.get("active", "1")) not in ("1", "True", "true"):
+            if not _is_active(row):
                 continue
             if pattern.search(str(row.get("goto", ""))):
                 result.append(address)

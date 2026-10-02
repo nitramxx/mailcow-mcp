@@ -111,6 +111,11 @@ class AppConfig:
     # Folder names to try after SPECIAL-USE flags, before the common names.
     folder_names: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def https(self) -> bool:
+        """Served over HTTPS (http:// is allowed only for local testing)."""
+        return self.public_url.startswith("https://")
+
 
 @dataclass(frozen=True)
 class BrokerConfig:
