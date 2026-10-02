@@ -10,7 +10,7 @@ RUN apt-get update \
 COPY dovecot.conf /etc/dovecot/dovecot.conf
 COPY users /etc/dovecot/users
 RUN touch /etc/dovecot/app-passwords
-COPY main.cf.settings submission.cf sender_login virtual_aliases transport /etc/postfix/
+COPY main.cf.settings submission.cf sender_login virtual_aliases virtual_mailboxes transport /etc/postfix/
 RUN while IFS= read -r setting; do postconf -e "$setting"; done < /etc/postfix/main.cf.settings \
     && cat /etc/postfix/submission.cf >> /etc/postfix/master.cf \
     && postconf -F '*/*/chroot = n' \

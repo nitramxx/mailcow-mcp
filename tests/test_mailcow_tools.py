@@ -13,17 +13,17 @@ import httpx
 import pytest
 import radicale.config
 from a2wsgi import WSGIMiddleware
-from mailcow_fixtures import BrokerSetup, make_mailcow_harness
-from mock_mailcow import MockMailcow, RunningMailcow
 from radicale.app import Application
-from test_mailcow_login import in_app, sign_in
 
 from mailcow_mcp.config import generate_key, load_app_config
 from mailcow_mcp.contacts import CardDav, parse_vcards
 from mailcow_mcp.errors import MailError
 
 from conftest import Harness, McpSession, ToolFailed, app_config, make_harness, query_of
+from mailcow_fixtures import BrokerSetup, make_mailcow_harness
 from mailserver_fixture import ALICE, MailServer
+from mock_mailcow import MockMailcow, RunningMailcow
+from test_mailcow_login import in_app, sign_in
 
 CONTACTS = [
     "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:1\r\nFN:Jan Novák\r\nN:Novák;Jan;;;\r\nEMAIL;TYPE=work:jan@firma.cz\r\nORG:Firma s.r.o.\r\nTEL:+420 777 000 000\r\nEND:VCARD\r\n",

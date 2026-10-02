@@ -244,6 +244,8 @@ def run_mailcow(certs: Path) -> Iterator[RunningMailcow]:
         log_level="warning",
         ssl_certfile=str(certs / "server.crt"),
         ssl_keyfile=str(certs / "server.key"),
+        # The broker's API clients keep connections open: don't wait for them at the end.
+        timeout_graceful_shutdown=1,
     )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)

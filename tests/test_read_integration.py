@@ -75,7 +75,9 @@ def imap_flags(server: MailServer, folder: str, uid: int) -> str:
     try:
         conn.select(f'"{folder}"', readonly=True)
         _, data = conn.uid("FETCH", str(uid), "(FLAGS)")
-        return data[0].decode() if isinstance(data[0], bytes) else ""
+        # Not found would make every "flag not set" check pass: fail instead.
+        assert isinstance(data[0], bytes), f"no message {uid} in {folder}"
+        return data[0].decode()
     finally:
         conn.logout()
 

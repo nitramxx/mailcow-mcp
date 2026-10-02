@@ -6,7 +6,7 @@ import pytest
 from cryptography.fernet import Fernet
 from starlette.testclient import TestClient
 
-from mailcow_mcp import cli
+from mailcow_mcp import __version__, cli
 from mailcow_mcp.broker import create_broker_app
 
 
@@ -91,11 +91,7 @@ def test_broker_healthz(tmp_path: Path) -> None:
     )
     response = TestClient(create_broker_app(config)).get("/healthz")
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "role": "broker",
-        "version": response.json()["version"],
-    }
+    assert response.json() == {"status": "ok", "role": "broker", "version": __version__}
 
 
 def _data_env(monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> None:

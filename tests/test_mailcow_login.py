@@ -10,8 +10,6 @@ from typing import Any
 
 import httpx
 import pytest
-from mailcow_fixtures import BrokerSetup, make_mailcow_harness
-from mock_mailcow import MockMailcow, RunningMailcow
 
 from mailcow_mcp.imap import LoginResult
 from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
@@ -27,6 +25,8 @@ from conftest import (
     pkce_pair,
     query_of,
 )
+from mailcow_fixtures import BrokerSetup, make_mailcow_harness
+from mock_mailcow import MockMailcow, RunningMailcow
 
 
 @pytest.fixture
@@ -202,11 +202,14 @@ def test_allowed_domains_apply(
 def test_app_password_that_does_not_work_is_removed(
     running_mailcow: RunningMailcow, mailcow: MockMailcow, certs: Path, broker: BrokerSetup
 ) -> None:
-    for app in make_mailcow_harness(
-        running_mailcow, certs, broker, verifier=FakeVerifier(result=LoginResult.INVALID)
-    ):
+    verifier = FakeVerifier(result=LoginResult.INVALID)
+    for app in make_mailcow_harness(running_mailcow, certs, broker, verifier=verifier):
         _, response = sign_in(app, certs)
         assert response.status_code == 502
+        # It was created and checked, then deleted again (not: never created).
+        assert [user for user, _ in verifier.calls] == ["alice@example.test"]
+        assert ("POST", "/api/v1/add/app-passwd") in mailcow.requests
+        assert ("POST", "/api/v1/delete/app-passwd") in mailcow.requests
         assert mailcow.app_passwords == []
 
 
@@ -263,11 +266,11 @@ def test_cli_revoke_deprovisions(
     assert mailcow.app_passwords == []
 
 
-def test_tools_fail_cleanly_without_the_broker_secret(
+def test_tools_fail_cleanly_when_the_mail_server_is_unreachable(
     app: Harness, certs: Path, broker: BrokerSetup
 ) -> None:
     _, tokens = connect(app, certs)
     session = McpSession(app.client, tokens["access_token"])
     assert session.request("tools/list", {})["tools"]
-    with pytest.raises(ToolFailed):
+    with pytest.raises(ToolFailed, match="can't be reached"):
         session.call("read_message", folder="INBOX", uid=1)  # no IMAP server in this test

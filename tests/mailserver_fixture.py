@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import imaplib
+import os
 import shutil
 import smtplib
 import ssl
@@ -186,6 +187,8 @@ def _port(container: str, port: int) -> int:
 @pytest.fixture(scope="session")
 def mailserver(tmp_path_factory: pytest.TempPathFactory) -> Iterator[MailServer]:
     if not _docker_available():
+        if os.environ.get("CI"):
+            pytest.fail("Docker is required for the integration tests in CI")
         pytest.skip("Docker is not available")
     certs = tmp_path_factory.mktemp("certs")
     ca_file = make_certificates(certs)
@@ -208,11 +211,11 @@ def mailserver(tmp_path_factory: pytest.TempPathFactory) -> Iterator[MailServer]
     subprocess.run(
         ["docker", "create", "--rm", "--name", name, *ports, IMAGE], check=True, capture_output=True
     )
-    subprocess.run(
-        ["docker", "cp", f"{certs}/.", f"{name}:/certs"], check=True, capture_output=True
-    )
-    subprocess.run(["docker", "start", name], check=True, capture_output=True)
     try:
+        subprocess.run(
+            ["docker", "cp", f"{certs}/.", f"{name}:/certs"], check=True, capture_output=True
+        )
+        subprocess.run(["docker", "start", name], check=True, capture_output=True)
         server = MailServer(
             container=name,
             imaps_port=_port(name, 993),
@@ -225,8 +228,11 @@ def mailserver(tmp_path_factory: pytest.TempPathFactory) -> Iterator[MailServer]
         while True:
             try:
                 server.imap().logout()
+                # Postfix starts after Dovecot: wait for submission too.
+                _smtp_ready(server.submission_port, ca_file, implicit_tls=False)
+                _smtp_ready(server.submissions_port, ca_file, implicit_tls=True)
                 break
-            except (OSError, imaplib.IMAP4.error):
+            except (OSError, imaplib.IMAP4.error, smtplib.SMTPException):
                 if time.monotonic() > deadline:
                     raise RuntimeError(
                         "test mail server did not start:\n" + server.logs()

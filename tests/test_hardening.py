@@ -26,10 +26,19 @@ from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.cli import app_server_options
 from mailcow_mcp.db import Database
 from mailcow_mcp.errors import MailError
+from mailcow_mcp.imap import LoginResult
 from mailcow_mcp.logs import StripQueryString
 from mailcow_mcp.smtp import SmtpSender
 
-from conftest import BASE_URL, Harness, McpSession, ToolFailed, app_config
+from conftest import (
+    BASE_URL,
+    FakeVerifier,
+    Harness,
+    McpSession,
+    ToolFailed,
+    app_config,
+    make_harness,
+)
 
 
 class Recorder:
@@ -153,7 +162,10 @@ def _serve(trusted: str) -> Iterator[tuple[str, io.StringIO]]:
     server = uvicorn.Server(uvicorn.Config(app, **options))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
+    deadline = time.monotonic() + 10
     while not server.started:
+        if not thread.is_alive() or time.monotonic() > deadline:
+            raise RuntimeError(f"the test server didn't start on port {port}")
         time.sleep(0.02)
     try:
         yield f"http://127.0.0.1:{port}", audit
@@ -204,9 +216,14 @@ class TestIsolation:
         harness.db.execute("UPDATE grants SET resource = 'https://other.example/mcp'")
         assert harness.mcp(tokens["access_token"]).status_code == 401
 
-    def test_session_belongs_to_its_user(self, harness: Harness) -> None:
-        alice = harness.session()
-        _, other = harness.tokens()
+    def test_session_belongs_to_its_user(self) -> None:
+        for harness in make_harness(app_config(), FakeVerifier(result=LoginResult.OK)):
+            self._hijack(harness)
+
+    @staticmethod
+    def _hijack(harness: Harness) -> None:
+        alice = harness.session(email="alice@example.org")
+        _, other = harness.tokens(email="bob@example.org")
         hijack = harness.client.post(
             "/mcp",
             headers={
@@ -281,7 +298,7 @@ def test_untrusted_host_header_does_not_change_metadata(harness: Harness) -> Non
 
 def test_no_secrets_in_audit_or_errors_on_failures(harness: Harness) -> None:
     client_id = harness.register()["client_id"]
-    harness.client.post(
+    response = harness.client.post(
         "/token",
         data={
             "grant_type": "refresh_token",
@@ -289,5 +306,7 @@ def test_no_secrets_in_audit_or_errors_on_failures(harness: Harness) -> None:
             "client_id": client_id,
         },
     )
+    assert response.status_code == 400
+    assert "mcp_rt_guess" not in response.text
     log: Any = harness.audit_stream.getvalue()
     assert "mcp_rt_guess" not in log

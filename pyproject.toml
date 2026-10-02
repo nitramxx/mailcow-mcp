@@ -34,6 +34,7 @@ dev = [
     "httpx>=0.28",
     "mypy>=2.0",
     "pytest>=9.0",
+    "pytest-timeout>=2.4.0",
     "radicale>=3.8.1",
     "ruff>=0.16",
 ]
@@ -56,7 +57,13 @@ ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["mailcow_mcp"]
-known-local-folder = ["conftest", "mailserver_fixture"]
+known-local-folder = [
+    "conftest",
+    "mailcow_fixtures",
+    "mailserver_fixture",
+    "mock_mailcow",
+    "test_mailcow_login",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S603", "S607", "S608"]
@@ -71,7 +78,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra --strict-markers"
+# A hung server or loop fails its test instead of the whole run.
+timeout = 300
 markers = [
     "integration: needs Docker (real Dovecot + Postfix test server)",
     "kit: deployment kit tests (Docker; builds the image)",

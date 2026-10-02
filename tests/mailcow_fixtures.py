@@ -10,7 +10,6 @@ from typing import Any
 
 import httpx
 import pytest
-from mock_mailcow import API_KEY, CLIENT_ID, CLIENT_SECRET, MockMailcow, RunningMailcow, run_mailcow
 from starlette.applications import Starlette
 
 from mailcow_mcp.audit import AuditLog
@@ -24,6 +23,7 @@ from mailcow_mcp.tls import client_context
 
 from conftest import BASE_URL, FakeVerifier, Harness, app_config, make_harness
 from mailserver_fixture import SERVER_NAME, make_certificates
+from mock_mailcow import API_KEY, CLIENT_ID, CLIENT_SECRET, MockMailcow, RunningMailcow, run_mailcow
 
 SHARED_SECRET = generate_key()
 

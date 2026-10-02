@@ -6,8 +6,6 @@ import re
 from pathlib import Path
 
 import pytest
-from mailcow_fixtures import BrokerSetup, make_broker
-from mock_mailcow import MockMailcow, RunningMailcow
 
 from mailcow_mcp.broker import (
     RECONCILE_GRACE_SECONDS,
@@ -17,6 +15,9 @@ from mailcow_mcp.broker import (
 )
 from mailcow_mcp.capability import CapabilitySigner, InvalidCapability
 from mailcow_mcp.config import generate_key
+
+from mailcow_fixtures import BrokerSetup, make_broker
+from mock_mailcow import MockMailcow, RunningMailcow
 
 pytestmark = pytest.mark.anyio
 
@@ -170,9 +171,9 @@ class TestProvisioning:
     async def test_provision(self, broker: BrokerSetup, mailcow: MockMailcow) -> None:
         result = await provision(broker, mailcow, "Alice@Example.test")
         assert result["username"] == "alice@example.test"
-        (created,) = mailcow.passwords_of("Alice@Example.test") or mailcow.passwords_of(
-            "alice@example.test"
-        )
+        # Created for the lowercased mailbox, whatever case mailcow's profile used.
+        assert mailcow.passwords_of("Alice@Example.test") == []
+        (created,) = mailcow.passwords_of("alice@example.test")
         assert created["id"] == result["app_password_id"]
         assert re.fullmatch(r"MCP: Claude \(\d{4}-\d{2}-\d{2}, [0-9a-f]{4}\)", created["name"])
         assert created["protocols"] == ["imap_access", "smtp_access", "dav_access"]

@@ -90,8 +90,13 @@ class Harness:
     provider: Provider
     db: Database
     clock: Clock
-    verifier: FakeVerifier
+    fake_verifier: FakeVerifier | None  # None with real_login: passwords go to the mail server
     audit_stream: io.StringIO
+
+    @property
+    def verifier(self) -> FakeVerifier:
+        assert self.fake_verifier is not None, "this harness checks passwords with a mail server"
+        return self.fake_verifier
 
     def audit_lines(self) -> list[str]:
         return self.audit_stream.getvalue().splitlines()
@@ -301,7 +306,7 @@ def make_harness(
         **app_options,
     )
     with TestClient(app, base_url=BASE_URL) as client:
-        yield Harness(client, app.provider, db, clock, fake or FakeVerifier(), stream)
+        yield Harness(client, app.provider, db, clock, fake, stream)
 
 
 @pytest.fixture

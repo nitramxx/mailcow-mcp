@@ -37,6 +37,12 @@ def alice(server: Harness) -> McpSession:
 def wait_for(
     mailserver: MailServer, user: tuple[str, str], message_id: str, folder: str = "INBOX"
 ) -> EmailMessage:
+    return parse_message(wait_for_raw(mailserver, user, message_id, folder))
+
+
+def wait_for_raw(
+    mailserver: MailServer, user: tuple[str, str], message_id: str, folder: str = "INBOX"
+) -> bytes:
     deadline = time.monotonic() + 20
     while True:
         conn = mailserver.imap(user)
@@ -46,8 +52,8 @@ def wait_for(
             uids = data[0].split()
             if uids:
                 _, fetched = conn.uid("FETCH", uids[-1], "(BODY.PEEK[])")
-                raw = next(part[1] for part in fetched if isinstance(part, tuple))
-                return parse_message(raw)
+                raw: bytes = next(part[1] for part in fetched if isinstance(part, tuple))
+                return raw
         finally:
             conn.logout()
         if time.monotonic() > deadline:
@@ -128,6 +134,24 @@ def test_send_plain_text_from_alias(alice: McpSession, mailserver: MailServer) -
     assert received["From"] == "Alice from Sales <sales@example.test>"
     assert received.get_content_type() == "text/plain"
     assert received.get_content().replace("\r\n", "\n").strip() == "Plain text\nsecond line"
+
+
+def test_refused_recipients_are_reported(alice: McpSession, mailserver: MailServer) -> None:
+    result = alice.call(
+        "send_email",
+        to=["bob@example.test", "nobody@example.test"],
+        subject="Partly refused",
+        body_text="x",
+    )
+    assert result["accepted"] == ["bob@example.test"]
+    assert "nobody@example.test" in result["refused"]
+    assert result["refused"]["nobody@example.test"].startswith("5")
+    wait_for(mailserver, BOB, result["message_id"])
+
+
+def test_all_recipients_refused_is_an_error(alice: McpSession) -> None:
+    with pytest.raises(ToolFailed, match="refused every recipient"):
+        alice.call("send_email", to=["nobody@example.test"], subject="x", body_text="x")
 
 
 def test_sender_acl_rejection_is_reported(alice: McpSession) -> None:
@@ -390,19 +414,7 @@ def test_send_draft_reencodes_8bit_drafts(alice: McpSession, mailserver: MailSer
     draft.set_content("Příliš žluťoučký kůň", cte="8bit")
     uid = append(mailserver, ALICE, draft, folder="Drafts")
     alice.call("send_draft", uid=uid)
-    conn = mailserver.imap(BOB)
-    try:
-        deadline = time.monotonic() + 20
-        while True:
-            conn.select("INBOX", readonly=True)
-            _, data = conn.uid("SEARCH", "HEADER", "Message-ID", "<draft-8bit@example.test>")
-            if data[0] or time.monotonic() > deadline:
-                break
-            time.sleep(0.3)
-        _, fetched = conn.uid("FETCH", data[0].split()[-1], "(BODY.PEEK[])")
-        raw = next(part[1] for part in fetched if isinstance(part, tuple))
-    finally:
-        conn.logout()
+    raw = wait_for_raw(mailserver, BOB, "<draft-8bit@example.test>")
     body = raw.split(b"\r\n\r\n", 1)[1]
     assert body.isascii()
     assert parse_message(raw).get_content().strip() == "Příliš žluťoučký kůň"

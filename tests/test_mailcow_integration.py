@@ -6,12 +6,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from mailcow_fixtures import BrokerSetup, make_mailcow_harness
-from mock_mailcow import MockMailcow, RunningMailcow
-from test_mailcow_login import sign_in
 
 from conftest import Harness, McpSession, ToolFailed, query_of
+from mailcow_fixtures import BrokerSetup, make_mailcow_harness
 from mailserver_fixture import MailServer
+from mock_mailcow import MockMailcow, RunningMailcow
+from test_mailcow_login import sign_in
 
 pytestmark = pytest.mark.integration
 
@@ -50,7 +50,7 @@ def test_app_password_works_and_deleting_it_disconnects(
     assert sent["accepted"] == ["bob@example.test"]
 
     # The user deletes the app password in mailcow.
-    (password,) = mailcow.passwords_of("alice@example.test")
+    assert len(mailcow.passwords_of("alice@example.test")) == 1
     mailcow.app_passwords.clear()
     assert mailcow.on_app_password is not None
     mailcow.on_app_password("alice@example.test", None)
@@ -60,4 +60,3 @@ def test_app_password_works_and_deleting_it_disconnects(
     assert app.db.one("SELECT count(*) AS n FROM deprovision_queue")["n"] == 1  # type: ignore[index]
     with pytest.raises(ToolFailed, match="HTTP 401"):
         session.call("list_folders")
-    del password
