@@ -46,10 +46,13 @@ from mailcow_mcp.tools.common import (
     NOT_DESTRUCTIVE,
     READ_ONLY,
     FolderName,
+    MailboxParam,
+    MailboxResult,
     Moved,
     Uids,
     move,
     quarantine,
+    stamped,
     summaries,
     with_session,
 )
@@ -71,18 +74,18 @@ class FolderInfo(BaseModel):
     unseen: int
 
 
-class FolderList(BaseModel):
+class FolderList(MailboxResult):
     folders: list[FolderInfo]
 
 
-class MessageList(BaseModel):
+class MessageList(MailboxResult):
     folder: str
     total: int = Field(description="Messages matching, before the limit.")
     messages: list[MessageSummary]
     notice: str = LISTING_NOTICE
 
 
-class FullMessage(BaseModel):
+class FullMessage(MailboxResult):
     uid: int
     folder: str
     message_id: str | None
@@ -121,7 +124,7 @@ class Reply(BaseModel):
     )
 
 
-class ReplyList(BaseModel):
+class ReplyList(MailboxResult):
     message_id: str
     replies: list[Reply]
     searched: list[str]
@@ -129,14 +132,14 @@ class ReplyList(BaseModel):
     notice: str = LISTING_NOTICE
 
 
-class Thread(BaseModel):
+class Thread(MailboxResult):
     message_id: str
     messages: list[ThreadMessage]
     complete: bool = Field(description="False if the thread had more messages than were returned.")
     notice: str = MESSAGE_NOTICE
 
 
-class Updated(BaseModel):
+class Updated(MailboxResult):
     folder: str
     updated: list[int]
     not_found: list[int]
@@ -186,7 +189,10 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         description="List the mailbox's folders with their special use (inbox, sent, drafts, junk, trash, archive), message and unread counts.",
         annotations=READ_ONLY,
     )
-    async def list_folders(ctx: Context[Any, Any]) -> FolderList:
+    async def list_folders(
+        ctx: Context[Any, Any],
+        mailbox: MailboxParam = None,
+    ) -> FolderList:
         def work(session: ImapSession) -> FolderList:
             folders = []
             for folder in session.folders()[:MAX_FOLDERS]:
@@ -204,7 +210,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                         info.special_use = role
             return FolderList(folders=folders)
 
-        return await with_session(services, ctx, "list_folders", work)
+        return await with_session(services, ctx, "list_folders", work, mailbox)
 
     @mcp.tool(
         name="list_messages",
@@ -220,6 +226,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         since: Annotated[
             str | None, Field(description="Only messages since this date (YYYY-MM-DD).")
         ] = None,
+        mailbox: MailboxParam = None,
     ) -> MessageList:
         def work(session: ImapSession) -> MessageList:
             name = session.resolve(folder)
@@ -231,7 +238,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 folder=name, total=len(uids), messages=summaries(session, name, newest)
             )
 
-        return await with_session(services, ctx, "list_messages", work)
+        return await with_session(services, ctx, "list_messages", work, mailbox)
 
     @mcp.tool(
         name="search_messages",
@@ -251,6 +258,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         since: Annotated[str | None, Field(description="YYYY-MM-DD")] = None,
         before: Annotated[str | None, Field(description="YYYY-MM-DD")] = None,
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
+        mailbox: MailboxParam = None,
     ) -> MessageList:
         def work(session: ImapSession) -> MessageList:
             name = session.resolve(folder)
@@ -268,7 +276,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 folder=name, total=len(uids), messages=summaries(session, name, newest)
             )
 
-        return await with_session(services, ctx, "search_messages", work)
+        return await with_session(services, ctx, "search_messages", work, mailbox)
 
     @mcp.tool(
         name="read_message",
@@ -277,7 +285,10 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def read_message(
-        ctx: Context[Any, Any], folder: FolderName, uid: Annotated[int, Field(gt=0)]
+        ctx: Context[Any, Any],
+        folder: FolderName,
+        uid: Annotated[int, Field(gt=0)],
+        mailbox: MailboxParam = None,
     ) -> FullMessage:
         def work(session: ImapSession) -> FullMessage:
             name = session.resolve(folder)
@@ -311,7 +322,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 likely_spam=spam,
             )
 
-        return await with_session(services, ctx, "read_message", work)
+        return await with_session(services, ctx, "read_message", work, mailbox)
 
     @mcp.tool(
         name="get_attachment",
@@ -327,6 +338,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         part_id: Annotated[
             str, Field(max_length=MAX_PART_ID, description="From read_message's attachment list.")
         ],
+        mailbox: MailboxParam = None,
     ) -> CallToolResult:
         def work(session: ImapSession) -> CallToolResult:
             name = session.resolve(folder)
@@ -381,7 +393,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 content=[TextContent(type="text", text=info["text"])], structured_content=info
             )
 
-        return await with_session(services, ctx, "get_attachment", work)
+        return await with_session(services, ctx, "get_attachment", work, mailbox)
 
     @mcp.tool(
         name="find_replies",
@@ -398,12 +410,13 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         ctx: Context[Any, Any],
         message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)],
         include_spam: bool = True,
+        mailbox: MailboxParam = None,
     ) -> ReplyList:
-        async with services.tool(ctx, "find_replies") as mailbox:
+        async with services.tool(ctx, "find_replies", mailbox) as box:
 
             def work() -> tuple[ReplyList, set[str], datetime | None]:
                 mid = normalize_message_id(message_id)
-                with services.imap.connect(mailbox.username, mailbox.password) as session:
+                with services.imap.connect(box.username, box.password) as session:
                     places = [("inbox", "INBOX")]
                     junk = session.folder("junk")
                     if include_spam and junk:
@@ -462,7 +475,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                         "checked (it's matched by the original recipients)."
                     )
                 else:
-                    items, problem = await quarantine(services, mailbox)
+                    items, problem = await quarantine(services, box)
                     if problem:
                         result.note = f"Quarantine not checked: {problem}"
                     else:
@@ -471,11 +484,11 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             result.replies.sort(key=lambda r: iso_timestamp(r.date))
             services.audit(
                 "find_replies",
-                mailbox=mailbox.username,
-                client=mailbox.client_name,
+                mailbox=box.username,
+                client=box.client_name,
                 count=len(result.replies),
             )
-            return result
+            return stamped(result, box)
 
     @mcp.tool(
         name="get_thread",
@@ -484,14 +497,16 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def get_thread(
-        ctx: Context[Any, Any], message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)]
+        ctx: Context[Any, Any],
+        message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)],
+        mailbox: MailboxParam = None,
     ) -> Thread:
         def work(session: ImapSession) -> Thread:
             mid = normalize_message_id(message_id)
             messages, complete = find_thread(session, mid)
             return Thread(message_id=mid, messages=messages, complete=complete)
 
-        return await with_session(services, ctx, "get_thread", work)
+        return await with_session(services, ctx, "get_thread", work, mailbox)
 
     @mcp.tool(
         name="mark_messages",
@@ -505,6 +520,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         uids: Uids,
         seen: Annotated[bool | None, Field(description="true: read, false: unread.")] = None,
         flagged: bool | None = None,
+        mailbox: MailboxParam = None,
     ) -> Updated:
         if seen is None and flagged is None:
             raise ToolError("Give seen and/or flagged.")
@@ -518,7 +534,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 session.set_flags(name, present, add, remove)
             return Updated(folder=name, updated=present, not_found=sorted(set(uids) - set(present)))
 
-        return await with_session(services, ctx, "mark_messages", work)
+        return await with_session(services, ctx, "mark_messages", work, mailbox)
 
     @mcp.tool(
         name="move_messages",
@@ -533,6 +549,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         to_folder: Annotated[
             str, Field(max_length=MAX_FOLDER_NAME, description="Destination folder or role.")
         ],
+        mailbox: MailboxParam = None,
     ) -> Moved:
         def work(session: ImapSession) -> Moved:
             source = session.resolve(folder)
@@ -541,7 +558,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 raise InvalidInput("The message is already in that folder.")
             return move(services, session, source, uids, destination)
 
-        return await with_session(services, ctx, "move_messages", work)
+        return await with_session(services, ctx, "move_messages", work, mailbox)
 
 
 def quarantine_replies(

@@ -37,5 +37,21 @@
   "rate_limited_title": "Příliš mnoho pokusů",
   "error_cross_origin": "Přihlašovací formulář byl odeslán z jiného webu. Vraťte se do aplikace a připojte ji znovu.",
   "can_drafts": "ukládat koncepty vaším jménem, které pak odešlete sami (tento server poštu neodesílá)",
-  "privacy_agent_drafts": "AI agent s tímto přístupem může psát koncepty vaším jménem; odesíláte je sami. Připojujte jen aplikace, kterým důvěřujete."
+  "privacy_agent_drafts": "AI agent s tímto přístupem může psát koncepty vaším jménem; odesíláte je sami. Připojujte jen aplikace, kterým důvěřujete.",
+  "connect_title": "Přidat schránku",
+  "connect_heading": "Přidat schránku k připojení",
+  "connect_to": "Tímto přihlásíte další schránku do {client}, který už používá {mailboxes}.",
+  "connect_check": "Pokračujte, jen pokud jste {client} o přidání schránky požádali. Bude ji moci používat stejně jako ostatní.",
+  "connect_session_hint": "Pokud je tento prohlížeč v mailcow přihlášen jako jiná schránka, mailcow použije tu: otevřete tuto stránku v anonymním okně, nebo se nejdřív z mailcow odhlaste.",
+  "connect_submit": "Přihlásit a přidat",
+  "connect_done_title": "Schránka přidána",
+  "connect_done_body": "{mailbox} je nyní připojena k {client}. Vraťte se do {client}.",
+  "connect_already_title": "Už připojeno",
+  "connect_already_body": "{mailbox} už je k {client} připojena. Pro přidání jiné schránky si v {client} řekněte o nový odkaz a přihlaste se jako ta schránka.",
+  "connect_full_title": "Další schránka se nevejde",
+  "connect_full_body": "Toto připojení už má nejvíc schránek, kolik může mít. Nejdřív nějakou odeberte.",
+  "connect_expired_title": "Platnost odkazu vypršela",
+  "connect_expired_body": "Odkazy pro přidání schránky fungují jednou a 15 minut. Řekněte si v aplikaci o nový.",
+  "connect_cancelled_title": "Nic nebylo přidáno",
+  "connect_cancelled_body": "Tuto stránku můžete zavřít."
 }

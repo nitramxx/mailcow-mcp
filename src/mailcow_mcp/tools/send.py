@@ -9,7 +9,7 @@ from typing import Annotated, Any
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from mailcow_mcp.compose import (
     MAX_ATTACHMENTS,
@@ -36,6 +36,7 @@ from mailcow_mcp.messages import header
 from mailcow_mcp.mime import check_attachment, find_part, parse_message, part_bytes
 from mailcow_mcp.services import Mailbox, Services
 from mailcow_mcp.smtp import SmtpResult
+from mailcow_mcp.tools.common import MailboxParam, MailboxResult, stamped
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ FromName = Annotated[
 ]
 
 
-class SendResult(BaseModel):
+class SendResult(MailboxResult):
     message_id: str = Field(description="Use with find_replies, get_thread and delivery_status.")
     accepted: list[str]
     refused: dict[str, str] = Field(description="Recipients the server refused, with its reason.")
@@ -81,13 +82,13 @@ class SendResult(BaseModel):
     note: str | None = None
 
 
-class DraftResult(BaseModel):
+class DraftResult(MailboxResult):
     uid: int | None = Field(description="Draft UID in the Drafts folder.")
     message_id: str
     folder: str
 
 
-class DeleteResult(BaseModel):
+class DeleteResult(MailboxResult):
     deleted: bool
     folder: str
 
@@ -245,7 +246,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         name="send_email",
         title="Send email",
         description=(
-            "Send an email from the signed-in mailbox. Give the body as Markdown (sent as HTML "
+            "Send an email from a connected mailbox. Give the body as Markdown (sent as HTML "
             "with a plain-text alternative) or as plain text. Attachments can be uploaded "
             "(base64), taken from a message in the mailbox, or rendered as a PDF from Markdown. "
             "Set in_reply_to to a Message-ID to reply in its thread. Set from_name so recipients "
@@ -268,8 +269,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         from_address: FromAddress = None,
         in_reply_to: InReplyTo = None,
         attachments: Attachments = None,
+        mailbox: MailboxParam = None,
     ) -> SendResult:
-        async with services.tool(ctx, "send_email") as mailbox:
+        async with services.tool(ctx, "send_email", mailbox) as box:
             outgoing = Outgoing(
                 to=to,
                 cc=cc or [],
@@ -281,30 +283,33 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 from_address=from_address,
                 in_reply_to=in_reply_to,
             )
-            services.send_limits.check(mailbox.username)  # before the work of composing
-            composed = await prepare(mailbox, outgoing, attachments or [])
+            services.send_limits.check(box.username)  # before the work of composing
+            composed = await prepare(box, outgoing, attachments or [])
             result = await send(
-                mailbox, composed.envelope_from, composed.recipients, composed.as_bytes()
+                box, composed.envelope_from, composed.recipients, composed.as_bytes()
             )
             saved, folder, note = await anyio.to_thread.run_sync(
-                file_sent, mailbox, composed.copy_with_bcc
+                file_sent, box, composed.copy_with_bcc
             )
             services.audit(
                 "send_email",
-                mailbox=mailbox.username,
-                client=mailbox.client_name,
+                mailbox=box.username,
+                client=box.client_name,
                 recipients=len(result.accepted),
                 refused=len(result.refused),
                 attachments=len(outgoing.attachments),
                 bytes=len(composed.as_bytes()),
             )
-            return SendResult(
-                message_id=composed.message_id,
-                accepted=result.accepted,
-                refused=result.refused,
-                saved_to_sent=saved,
-                sent_folder=folder,
-                note=note,
+            return stamped(
+                SendResult(
+                    message_id=composed.message_id,
+                    accepted=result.accepted,
+                    refused=result.refused,
+                    saved_to_sent=saved,
+                    sent_folder=folder,
+                    note=note,
+                ),
+                box,
             )
 
     @mcp.tool(
@@ -331,8 +336,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         from_address: FromAddress = None,
         in_reply_to: InReplyTo = None,
         attachments: Attachments = None,
+        mailbox: MailboxParam = None,
     ) -> DraftResult:
-        async with services.tool(ctx, "save_draft") as mailbox:
+        async with services.tool(ctx, "save_draft", mailbox) as box:
             outgoing = Outgoing(
                 to=to,
                 cc=cc or [],
@@ -344,7 +350,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 from_address=from_address,
                 in_reply_to=in_reply_to,
             )
-            composed = await prepare(mailbox, outgoing, attachments or [])
+            composed = await prepare(box, outgoing, attachments or [])
 
             def store(session: ImapSession) -> tuple[str, int | None]:
                 folder = session.require_folder("drafts")
@@ -354,14 +360,14 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     uid = max(uids) if uids else None
                 return folder, uid
 
-            folder, uid = await services.run_imap(mailbox, store)
+            folder, uid = await services.run_imap(box, store)
             services.audit(
                 "save_draft",
-                mailbox=mailbox.username,
-                client=mailbox.client_name,
+                mailbox=box.username,
+                client=box.client_name,
                 attachments=len(outgoing.attachments),
             )
-            return DraftResult(uid=uid, message_id=composed.message_id, folder=folder)
+            return stamped(DraftResult(uid=uid, message_id=composed.message_id, folder=folder), box)
 
     @sending_tool(
         name="send_draft",
@@ -378,9 +384,10 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     async def send_draft(
         uid: Annotated[int, Field(gt=0, description="The draft's UID in the Drafts folder.")],
         ctx: Context[Any, Any],
+        mailbox: MailboxParam = None,
     ) -> SendResult:
-        async with services.tool(ctx, "send_draft") as mailbox:
-            services.send_limits.check(mailbox.username)
+        async with services.tool(ctx, "send_draft", mailbox) as box:
+            services.send_limits.check(box.username)
 
             def load(session: ImapSession) -> Composed:
                 drafts = session.require_folder("drafts")
@@ -389,28 +396,29 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     raw, max_message_bytes=services.max_message_bytes, timezone=config.timezone
                 )
 
-            stored = await services.run_imap(mailbox, load)
-            result = await send(
-                mailbox, stored.envelope_from, stored.recipients, stored.transmitted
-            )
+            stored = await services.run_imap(box, load)
+            result = await send(box, stored.envelope_from, stored.recipients, stored.transmitted)
             saved, folder, note = await anyio.to_thread.run_sync(
-                file_sent, mailbox, stored.copy_with_bcc, uid
+                file_sent, box, stored.copy_with_bcc, uid
             )
             services.audit(
                 "send_draft",
-                mailbox=mailbox.username,
-                client=mailbox.client_name,
+                mailbox=box.username,
+                client=box.client_name,
                 recipients=len(result.accepted),
                 refused=len(result.refused),
                 bytes=len(stored.transmitted),
             )
-            return SendResult(
-                message_id=stored.message_id,
-                accepted=result.accepted,
-                refused=result.refused,
-                saved_to_sent=saved,
-                sent_folder=folder,
-                note=note,
+            return stamped(
+                SendResult(
+                    message_id=stored.message_id,
+                    accepted=result.accepted,
+                    refused=result.refused,
+                    saved_to_sent=saved,
+                    sent_folder=folder,
+                    note=note,
+                ),
+                box,
             )
 
     @mcp.tool(
@@ -424,16 +432,17 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     async def delete_draft(
         uid: Annotated[int, Field(gt=0, description="The draft's UID in the Drafts folder.")],
         ctx: Context[Any, Any],
+        mailbox: MailboxParam = None,
     ) -> DeleteResult:
-        async with services.tool(ctx, "delete_draft") as mailbox:
+        async with services.tool(ctx, "delete_draft", mailbox) as box:
 
             def delete() -> str:
-                with services.imap.connect(mailbox.username, mailbox.password) as session:
+                with services.imap.connect(box.username, box.password) as session:
                     folder = session.require_folder("drafts")
                     session.size(folder, uid)  # NotFound if it isn't there
                     session.delete(folder, uid)
                     return folder
 
             folder = await anyio.to_thread.run_sync(delete)
-            services.audit("delete_draft", mailbox=mailbox.username, client=mailbox.client_name)
-            return DeleteResult(deleted=True, folder=folder)
+            services.audit("delete_draft", mailbox=box.username, client=box.client_name)
+            return stamped(DeleteResult(deleted=True, folder=folder), box)

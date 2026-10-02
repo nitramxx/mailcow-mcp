@@ -37,5 +37,21 @@
   "rate_limited_title": "Too many attempts",
   "error_cross_origin": "This sign-in page was submitted from another site. Go back to your app and connect again.",
   "can_drafts": "save drafts in your name for you to send (this server doesn't send mail)",
-  "privacy_agent_drafts": "An AI agent with this access can write drafts in your name; you send them yourself. Only connect apps you trust."
+  "privacy_agent_drafts": "An AI agent with this access can write drafts in your name; you send them yourself. Only connect apps you trust.",
+  "connect_title": "Add a mailbox",
+  "connect_heading": "Add a mailbox to a connection",
+  "connect_to": "This signs another mailbox into {client}, which already uses {mailboxes}.",
+  "connect_check": "Continue only if you asked {client} to add a mailbox. It will be able to use this mailbox like the others.",
+  "connect_session_hint": "If this browser is signed in to mailcow as another mailbox, mailcow uses that one: open this page in a private window, or sign out of mailcow first.",
+  "connect_submit": "Sign in and add",
+  "connect_done_title": "Mailbox added",
+  "connect_done_body": "{mailbox} is now connected to {client}. Go back to {client}.",
+  "connect_already_title": "Already connected",
+  "connect_already_body": "{mailbox} is already connected to {client}. To add a different mailbox, ask {client} for a new link and sign in as that mailbox.",
+  "connect_full_title": "No room for another mailbox",
+  "connect_full_body": "This connection already has as many mailboxes as it can have. Remove one first.",
+  "connect_expired_title": "This link has expired",
+  "connect_expired_body": "Links for adding a mailbox work once and for 15 minutes. Ask your app for a new one.",
+  "connect_cancelled_title": "Nothing was added",
+  "connect_cancelled_body": "You can close this page."
 }

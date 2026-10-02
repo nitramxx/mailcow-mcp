@@ -14,7 +14,7 @@ from mailcow_mcp.contacts import CardDav
 from mailcow_mcp.errors import ContactsAuthFailed, CredentialsRejected
 from mailcow_mcp.limits import MAX_CONTACT_QUERY, MAX_MESSAGE_ID
 from mailcow_mcp.services import Services
-from mailcow_mcp.tools.common import READ_ONLY
+from mailcow_mcp.tools.common import READ_ONLY, MailboxParam, MailboxResult, stamped
 from mailcow_mcp.untrusted import CONTACTS_NOTICE, SERVER_NOTICE
 
 QUARANTINE_ACTION = ToolAnnotations(
@@ -22,12 +22,12 @@ QUARANTINE_ACTION = ToolAnnotations(
 )
 
 
-class Released(BaseModel):
+class Released(MailboxResult):
     released: int
     note: str = "Delivered to INBOX. mailcow's spam filter (rspamd) learned it as not spam."
 
 
-class Deleted(BaseModel):
+class Deleted(MailboxResult):
     deleted: int
 
 
@@ -42,7 +42,7 @@ class RecipientStatus(BaseModel):
     time: str | None = None
 
 
-class DeliveryStatus(BaseModel):
+class DeliveryStatus(MailboxResult):
     message_id: str
     recipients: list[RecipientStatus]
     note: str | None = None
@@ -69,7 +69,7 @@ class ContactResult(BaseModel):
     phones: list[str] = []
 
 
-class Contacts(BaseModel):
+class Contacts(MailboxResult):
     query: str
     contacts: list[ContactResult]
     notice: str = CONTACTS_NOTICE
@@ -97,14 +97,14 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
         annotations=QUARANTINE_ACTION,
     )
     async def release_from_quarantine(
-        ctx: Context[Any, Any], id: Annotated[int, Field(gt=0, description="Quarantine item id.")]
+        ctx: Context[Any, Any],
+        id: Annotated[int, Field(gt=0, description="Quarantine item id.")],
+        mailbox: MailboxParam = None,
     ) -> Released:
-        async with services.tool(ctx, "release_from_quarantine") as mailbox:
-            result = await services.broker_call(mailbox, "quarantine_release", id=id)
-            services.audit(
-                "release_from_quarantine", mailbox=mailbox.username, client=mailbox.client_name
-            )
-            return Released(released=int(result["released"]))
+        async with services.tool(ctx, "release_from_quarantine", mailbox) as box:
+            result = await services.broker_call(box, "quarantine_release", id=id)
+            services.audit("release_from_quarantine", mailbox=box.username, client=box.client_name)
+            return stamped(Released(released=int(result["released"])), box)
 
     @mcp.tool(
         name="delete_from_quarantine",
@@ -113,14 +113,14 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
         annotations=QUARANTINE_ACTION,
     )
     async def delete_from_quarantine(
-        ctx: Context[Any, Any], id: Annotated[int, Field(gt=0, description="Quarantine item id.")]
+        ctx: Context[Any, Any],
+        id: Annotated[int, Field(gt=0, description="Quarantine item id.")],
+        mailbox: MailboxParam = None,
     ) -> Deleted:
-        async with services.tool(ctx, "delete_from_quarantine") as mailbox:
-            result = await services.broker_call(mailbox, "quarantine_delete", id=id)
-            services.audit(
-                "delete_from_quarantine", mailbox=mailbox.username, client=mailbox.client_name
-            )
-            return Deleted(deleted=int(result["deleted"]))
+        async with services.tool(ctx, "delete_from_quarantine", mailbox) as box:
+            result = await services.broker_call(box, "quarantine_delete", id=id)
+            services.audit("delete_from_quarantine", mailbox=box.username, client=box.client_name)
+            return stamped(Deleted(deleted=int(result["deleted"])), box)
 
     @mcp.tool(
         name="delivery_status",
@@ -133,11 +133,13 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def delivery_status(
-        ctx: Context[Any, Any], message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)]
+        ctx: Context[Any, Any],
+        message_id: Annotated[str, Field(max_length=MAX_MESSAGE_ID)],
+        mailbox: MailboxParam = None,
     ) -> DeliveryStatus:
-        async with services.tool(ctx, "delivery_status") as mailbox:
+        async with services.tool(ctx, "delivery_status", mailbox) as box:
             mid = normalize_message_id(message_id)
-            result = await services.broker_call(mailbox, "delivery_status", message_id=mid)
+            result = await services.broker_call(box, "delivery_status", message_id=mid)
             recipients = [RecipientStatus(**r) for r in result["recipients"]]
             note = None
             if not recipients:
@@ -145,8 +147,8 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
                     "Nothing in mailcow's recent mail log for this Message-ID from this mailbox: "
                     "it may still be queued, or be older than the log reaches."
                 )
-            services.audit("delivery_status", mailbox=mailbox.username, client=mailbox.client_name)
-            return DeliveryStatus(message_id=mid, recipients=recipients, note=note)
+            services.audit("delivery_status", mailbox=box.username, client=box.client_name)
+            return stamped(DeliveryStatus(message_id=mid, recipients=recipients, note=note), box)
 
     @mcp.tool(
         name="my_addresses",
@@ -154,10 +156,13 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
         description="The mailbox's own address and its aliases: the values send_email accepts as from_address.",
         annotations=READ_ONLY,
     )
-    async def my_addresses(ctx: Context[Any, Any]) -> Addresses:
-        async with services.tool(ctx, "my_addresses") as mailbox:
-            result = await services.broker_call(mailbox, "aliases")
-            services.audit("my_addresses", mailbox=mailbox.username, client=mailbox.client_name)
+    async def my_addresses(
+        ctx: Context[Any, Any],
+        mailbox: MailboxParam = None,
+    ) -> Addresses:
+        async with services.tool(ctx, "my_addresses", mailbox) as box:
+            result = await services.broker_call(box, "aliases")
+            services.audit("my_addresses", mailbox=box.username, client=box.client_name)
             return Addresses(
                 mailbox=result["mailbox"],
                 aliases=result["aliases"],
@@ -175,10 +180,11 @@ def _register_contacts(mcp: MCPServer[Any], services: Services, carddav: CardDav
     async def find_contacts(
         ctx: Context[Any, Any],
         query: Annotated[str, Field(min_length=2, max_length=MAX_CONTACT_QUERY)],
+        mailbox: MailboxParam = None,
     ) -> Contacts:
-        async with services.tool(ctx, "find_contacts") as mailbox:
+        async with services.tool(ctx, "find_contacts", mailbox) as box:
             try:
-                found = await carddav.search(mailbox.username, mailbox.password, query)
+                found = await carddav.search(box.username, box.password, query)
             except ContactsAuthFailed as exc:
                 # In mailcow the app password has DAV access: refusal means it's gone.
                 if services.config.mode is Mode.MAILCOW:
@@ -186,16 +192,22 @@ def _register_contacts(mcp: MCPServer[Any], services: Services, carddav: CardDav
                 raise
             services.audit(
                 "find_contacts",
-                mailbox=mailbox.username,
-                client=mailbox.client_name,
+                mailbox=box.username,
+                client=box.client_name,
                 count=len(found),
             )
-            return Contacts(
-                query=query,
-                contacts=[
-                    ContactResult(
-                        name=c.name, emails=c.emails, organisation=c.organisation, phones=c.phones
-                    )
-                    for c in found
-                ],
+            return stamped(
+                Contacts(
+                    query=query,
+                    contacts=[
+                        ContactResult(
+                            name=c.name,
+                            emails=c.emails,
+                            organisation=c.organisation,
+                            phones=c.phones,
+                        )
+                        for c in found
+                    ],
+                ),
+                box,
             )

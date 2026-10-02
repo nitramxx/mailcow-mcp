@@ -130,7 +130,7 @@ def test_migrate_users_clients_revoke(
     assert "Test Client" in capsys.readouterr().out
 
     assert cli.main(["revoke", EMAIL.upper()]) == 0
-    assert f"revoked 1 connection(s) of {EMAIL}" in capsys.readouterr().out
+    assert f"disconnected {EMAIL} from 1 connection(s)" in capsys.readouterr().out
     db = Database.in_data_dir(tmp_path)
     assert db.one("SELECT count(*) AS n FROM grants")["n"] == 0  # type: ignore[index]
     assert '"audit":"grant_revoke"' in (tmp_path / "audit.log").read_text()
@@ -138,4 +138,4 @@ def test_migrate_users_clients_revoke(
     assert cli.main(["revoke", "not-an-address"]) == cli.EXIT_CONFIG
     assert cli.main(["revoke"]) == cli.EXIT_CONFIG
     assert cli.main(["revoke", "--all"]) == 0
-    assert "revoked 0 connection(s)" in capsys.readouterr().out
+    assert "disconnected 0 mailbox(es)" in capsys.readouterr().out

@@ -256,7 +256,11 @@ def test_send_reports_filing_problems_as_a_note(
 
 def test_delete_draft(alice: McpSession, mailserver: MailServer) -> None:
     draft = alice.call("save_draft", to=["bob@example.test"], subject="Delete me", body_text="x")
-    assert alice.call("delete_draft", uid=draft["uid"]) == {"deleted": True, "folder": "Drafts"}
+    assert alice.call("delete_draft", uid=draft["uid"]) == {
+        "mailbox": "alice@example.test",
+        "deleted": True,
+        "folder": "Drafts",
+    }
     conn = mailserver.imap(ALICE)
     conn.select('"Drafts"', readonly=True)
     _, data = conn.uid("SEARCH", "HEADER", "Message-ID", draft["message_id"])
@@ -364,7 +368,7 @@ def test_rejected_credentials_sign_the_connection_out(server: Harness) -> None:
     session = server.session(*ALICE)
     # The password changes on the server: simulate by corrupting the stored credential.
     server.db.execute(
-        "UPDATE grants SET credential_enc = ?", (server.provider.box.encrypt("wrong"),)
+        "UPDATE grant_mailboxes SET credential_enc = ?", (server.provider.box.encrypt("wrong"),)
     )
     with pytest.raises(ToolFailed, match="reconnect the app"):
         session.call("save_draft", to=["bob@example.test"], subject="x", body_text="x")

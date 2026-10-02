@@ -11,8 +11,10 @@ and reusing a rotated refresh token or a spent code revokes it too.
 
 from __future__ import annotations
 
+import enum
 import json
 import logging
+import sqlite3
 import time
 import unicodedata
 from collections.abc import Callable
@@ -50,6 +52,9 @@ MAX_PENDING_CLIENTS = 1000
 MAX_REDIRECT_URIS = 10
 MAX_CLIENT_METADATA_BYTES = 16 * 1024
 MAX_CLIENT_NAME_LENGTH = 80
+MAX_MAILBOXES_PER_GRANT = 10
+CONNECT_REQUEST_TTL = 900  # an add_mailbox link
+CONNECT_PATH = "/connect"  # where that link points
 _LAST_USED_RESOLUTION = 60
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -92,6 +97,36 @@ class PendingAuthorization:
     @property
     def redirect_uri(self) -> str:
         return str(self.params.redirect_uri)
+
+
+@dataclass(frozen=True)
+class ConnectedMailbox:
+    """One mailbox of a connection, with what's needed to act for it."""
+
+    username: str
+    credential: str  # password or app password
+    login_method: str  # "password" or "mailcow"
+    capability: str | None  # the broker's token for its app password (mailcow sign-in)
+
+
+@dataclass(frozen=True)
+class PendingConnect:
+    """An add_mailbox link waiting for the user to sign in another mailbox."""
+
+    grant_id: int
+    id_hash: str
+    csrf: str
+    client_name: str | None
+    mailboxes: list[str]  # already connected
+    code: str = ""  # when loaded by the link's code
+    resume: str | None = None  # when loaded by mailcow state: lets the page's form continue
+
+
+class AddResult(enum.Enum):
+    ADDED = "added"
+    ALREADY_CONNECTED = "already_connected"
+    FULL = "full"
+    GONE = "gone"  # the connection ended meanwhile
 
 
 def _loopback_matches(requested: str, registered: str) -> bool:
@@ -333,31 +368,21 @@ class Provider(
         with self.db.transaction() as conn:
             if not self._take_pending(pending):
                 return None
-            conn.execute(
-                "INSERT INTO mailboxes (username, created_at, last_login_at) VALUES (?, ?, ?)"
-                " ON CONFLICT (username) DO UPDATE SET last_login_at = excluded.last_login_at",
-                (username, now, now),
-            )
-            mailbox = conn.execute(
-                "SELECT id FROM mailboxes WHERE username = ?", (username,)
-            ).fetchone()
             grant_id = conn.execute(
-                "INSERT INTO grants (client_id, mailbox_id, login_method, credential_enc, scopes,"
-                " resource, created_at, last_used_at, app_password_id, capability_enc)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO grants (client_id, scopes, resource, created_at, last_used_at)"
+                " VALUES (?, ?, ?, ?, ?)",
                 (
                     pending.client.client_id,
-                    mailbox["id"],
-                    login_method,
-                    self.box.encrypt(credential),
                     " ".join(pending.params.scopes or []),
                     self.resource_url,
                     now,
                     now,
-                    app_password_id,
-                    self.box.encrypt(capability) if capability else None,
                 ),
             ).lastrowid
+            assert grant_id is not None  # noqa: S101 - an INSERT always has one
+            self._attach(
+                conn, grant_id, username, credential, login_method, app_password_id, capability
+            )
             conn.execute(
                 "INSERT INTO auth_codes (code_hash, grant_id, code_challenge, redirect_uri,"
                 " redirect_uri_explicit, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -391,8 +416,8 @@ class Provider(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> GrantAuthorizationCode | None:
         row = self.db.one(
-            "SELECT a.*, g.client_id, g.scopes, g.resource, m.username FROM auth_codes a"
-            " JOIN grants g ON g.id = a.grant_id JOIN mailboxes m ON m.id = g.mailbox_id"
+            "SELECT a.*, g.client_id, g.scopes, g.resource"
+            " FROM auth_codes a JOIN grants g ON g.id = a.grant_id"
             " WHERE a.code_hash = ? AND g.client_id = ?",
             (hash_secret(authorization_code), client.client_id),
         )
@@ -413,7 +438,7 @@ class Provider(
             redirect_uri=row["redirect_uri"],
             redirect_uri_provided_explicitly=bool(row["redirect_uri_explicit"]),
             resource=row["resource"],
-            subject=row["username"],
+            subject=self._subject(row["grant_id"]),
             grant_id=row["grant_id"],
         )
 
@@ -459,8 +484,8 @@ class Provider(
         self, client: OAuthClientInformationFull, refresh_token: str
     ) -> GrantRefreshToken | None:
         row = self.db.one(
-            "SELECT t.*, g.client_id, g.scopes, g.resource, m.username FROM tokens t"
-            " JOIN grants g ON g.id = t.grant_id JOIN mailboxes m ON m.id = g.mailbox_id"
+            "SELECT t.*, g.client_id, g.scopes, g.resource"
+            " FROM tokens t JOIN grants g ON g.id = t.grant_id"
             " WHERE t.token_hash = ? AND t.kind = 'refresh' AND g.client_id = ?",
             (hash_secret(refresh_token), client.client_id),
         )
@@ -478,7 +503,7 @@ class Provider(
             scopes=row["scopes"].split(),
             expires_at=row["expires_at"],
             resource=row["resource"],
-            subject=row["username"],
+            subject=self._subject(row["grant_id"]),
             grant_id=row["grant_id"],
         )
 
@@ -501,9 +526,8 @@ class Provider(
     async def load_access_token(self, token: str) -> MailboxAccessToken | None:
         now = self.now()
         row = self.db.one(
-            "SELECT t.grant_id, t.expires_at, g.client_id, g.scopes, g.resource, g.last_used_at,"
-            " m.username FROM tokens t"
-            " JOIN grants g ON g.id = t.grant_id JOIN mailboxes m ON m.id = g.mailbox_id"
+            "SELECT t.grant_id, t.expires_at, g.client_id, g.scopes, g.resource, g.last_used_at"
+            " FROM tokens t JOIN grants g ON g.id = t.grant_id"
             " WHERE t.token_hash = ? AND t.kind = 'access' AND t.expires_at > ?",
             (hash_secret(token), now),
         )
@@ -519,7 +543,7 @@ class Provider(
             scopes=row["scopes"].split(),
             expires_at=row["expires_at"],
             resource=row["resource"],
-            subject=row["username"],
+            subject=self._subject(row["grant_id"]),
             grant_id=row["grant_id"],
         )
 
@@ -547,43 +571,195 @@ class Provider(
 
     # --- grants and cleanup --------------------------------------------------
 
-    def _grant_info(self, grant_id: int) -> tuple[str | None, str | None]:
+    def _subject(self, grant_id: int) -> str | None:
+        """The grant's first mailbox: the token's subject."""
+        usernames = self.usernames_of(grant_id)
+        return usernames[0] if usernames else None
+
+    def client_name_of(self, grant_id: int) -> str | None:
         row = self.db.one(
-            "SELECT m.username, c.client_name FROM grants g JOIN mailboxes m ON m.id = g.mailbox_id"
-            " JOIN clients c ON c.client_id = g.client_id WHERE g.id = ?",
+            "SELECT c.client_name FROM grants g JOIN clients c ON c.client_id = g.client_id"
+            " WHERE g.id = ?",
             (grant_id,),
         )
-        return (row["username"], row["client_name"]) if row else (None, None)
+        return row["client_name"] if row else None
+
+    def usernames_of(self, grant_id: int) -> list[str]:
+        """The grant's mailboxes, in the order they were connected."""
+        rows = self.db.all(
+            "SELECT m.username FROM grant_mailboxes gm JOIN mailboxes m ON m.id = gm.mailbox_id"
+            " WHERE gm.grant_id = ? ORDER BY gm.added_at, gm.id",
+            (grant_id,),
+        )
+        return [r["username"] for r in rows]
+
+    def connected(self, grant_id: int) -> list[ConnectedMailbox]:
+        """The grant's mailboxes with their credentials, in the order they were connected."""
+        rows = self.db.all(
+            "SELECT m.username, gm.credential_enc, gm.login_method, gm.capability_enc"
+            " FROM grant_mailboxes gm JOIN mailboxes m ON m.id = gm.mailbox_id"
+            " WHERE gm.grant_id = ? ORDER BY gm.added_at, gm.id",
+            (grant_id,),
+        )
+        return [
+            ConnectedMailbox(
+                username=r["username"],
+                credential=self.box.decrypt(r["credential_enc"]),
+                login_method=r["login_method"],
+                capability=self.box.decrypt(r["capability_enc"]) if r["capability_enc"] else None,
+            )
+            for r in rows
+        ]
+
+    def _attach(
+        self,
+        conn: sqlite3.Connection,
+        grant_id: int,
+        username: str,
+        credential: str,
+        login_method: str,
+        app_password_id: int | None,
+        capability: str | None,
+    ) -> None:
+        now = self.now()
+        conn.execute(
+            "INSERT INTO mailboxes (username, created_at, last_login_at) VALUES (?, ?, ?)"
+            " ON CONFLICT (username) DO UPDATE SET last_login_at = excluded.last_login_at",
+            (username, now, now),
+        )
+        mailbox = conn.execute(
+            "SELECT id FROM mailboxes WHERE username = ?", (username,)
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO grant_mailboxes (grant_id, mailbox_id, login_method, credential_enc,"
+            " app_password_id, capability_enc, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                grant_id,
+                mailbox["id"],
+                login_method,
+                self.box.encrypt(credential),
+                app_password_id,
+                self.box.encrypt(capability) if capability else None,
+                now,
+            ),
+        )
+
+    def add_mailbox(
+        self,
+        pending: PendingConnect,
+        *,
+        username: str,
+        credential: str,
+        login_method: str,
+        app_password_id: int | None = None,
+        capability: str | None = None,
+    ) -> AddResult:
+        """Connect another mailbox to the grant of an add_mailbox link (used up by this)."""
+        with self.db.transaction() as conn:
+            taken = conn.execute(
+                "DELETE FROM connect_requests WHERE id_hash = ?", (pending.id_hash,)
+            ).rowcount
+            exists = conn.execute(
+                "SELECT 1 FROM grants WHERE id = ?", (pending.grant_id,)
+            ).fetchone()
+            if not taken or exists is None:
+                return AddResult.GONE
+            current = [
+                r["username"]
+                for r in conn.execute(
+                    "SELECT m.username FROM grant_mailboxes gm"
+                    " JOIN mailboxes m ON m.id = gm.mailbox_id WHERE gm.grant_id = ?",
+                    (pending.grant_id,),
+                )
+            ]
+            if username in current:
+                return AddResult.ALREADY_CONNECTED
+            if len(current) >= MAX_MAILBOXES_PER_GRANT:
+                return AddResult.FULL
+            self._attach(
+                conn,
+                pending.grant_id,
+                username,
+                credential,
+                login_method,
+                app_password_id,
+                capability,
+            )
+        self.audit(
+            "mailbox_add",
+            mailbox=username,
+            client=pending.client_name,
+            method=login_method,
+            ip=client_ip.get(),
+        )
+        return AddResult.ADDED
+
+    def remove_mailbox(self, grant_id: int, username: str, *, reason: str) -> bool:
+        """Take one mailbox out of a grant (its app password is deleted via the broker).
+
+        Removing the last one ends the grant. Returns whether the mailbox was connected.
+        """
+        if self.usernames_of(grant_id) == [username]:
+            self.revoke_grant(grant_id, reason=reason)
+            return True
+        client = self.client_name_of(grant_id)
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO deprovision_queue (mailbox, capability_enc, queued_at)"
+                " SELECT ?, gm.capability_enc, ? FROM grant_mailboxes gm"
+                " JOIN mailboxes m ON m.id = gm.mailbox_id"
+                " WHERE gm.grant_id = ? AND m.username = ? AND gm.capability_enc IS NOT NULL",
+                (username, self.now(), grant_id, username),
+            )
+            removed = conn.execute(
+                "DELETE FROM grant_mailboxes WHERE grant_id = ? AND mailbox_id ="
+                " (SELECT id FROM mailboxes WHERE username = ?)",
+                (grant_id, username),
+            ).rowcount
+        if removed:
+            self.audit(
+                "mailbox_remove",
+                result="ok" if reason == "revoked" else reason,
+                mailbox=username,
+                client=client,
+                ip=client_ip.get(),
+            )
+        return bool(removed)
 
     def revoke_grant(self, grant_id: int, *, reason: str) -> None:
-        """End a grant. A mailcow app password is queued for deletion via the broker."""
-        mailbox, client = self._grant_info(grant_id)
-        if mailbox is None:
+        """End a grant. Its mailcow app passwords are queued for deletion via the broker."""
+        usernames = self.usernames_of(grant_id)
+        client = self.client_name_of(grant_id)
+        if not usernames and client is None:
             return
         self._client_used(grant_id, self.now())
         with self.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO deprovision_queue (mailbox, capability_enc, queued_at)"
-                " SELECT ?, capability_enc, ? FROM grants WHERE id = ? AND capability_enc IS NOT NULL",
-                (mailbox, self.now(), grant_id),
+                " SELECT m.username, gm.capability_enc, ? FROM grant_mailboxes gm"
+                " JOIN mailboxes m ON m.id = gm.mailbox_id"
+                " WHERE gm.grant_id = ? AND gm.capability_enc IS NOT NULL",
+                (self.now(), grant_id),
             )
             conn.execute("DELETE FROM grants WHERE id = ?", (grant_id,))
         self.audit(
             "grant_revoke",
             result="ok" if reason == "revoked" else reason,
-            mailbox=mailbox,
+            mailbox=", ".join(usernames) or None,
             client=client,
             ip=client_ip.get(),
         )
 
     def revoke_mailbox(self, username: str) -> int:
-        """Revoke every grant of a mailbox; returns how many there were."""
+        """Disconnect a mailbox from every grant (ending those it was the last one of);
+        returns how many grants it was in."""
         rows = self.db.all(
-            "SELECT g.id FROM grants g JOIN mailboxes m ON m.id = g.mailbox_id WHERE m.username = ?",
+            "SELECT gm.grant_id FROM grant_mailboxes gm JOIN mailboxes m ON m.id = gm.mailbox_id"
+            " WHERE m.username = ?",
             (username,),
         )
         for row in rows:
-            self.revoke_grant(row["id"], reason="revoked")
+            self.remove_mailbox(row["grant_id"], username, reason="revoked")
         self.db.execute("DELETE FROM mailboxes WHERE username = ?", (username,))
         return len(rows)
 
@@ -591,21 +767,63 @@ class Provider(
         """Every mailbox with a connection (or one that just ended)."""
         return [r["username"] for r in self.db.all("SELECT username FROM mailboxes")]
 
-    def credentials_of(self, grant_id: int) -> tuple[str, str, str | None] | None:
-        """(mailbox, password or app password, client name) of an active grant."""
-        row = self.db.one(
-            "SELECT g.credential_enc, m.username, c.client_name FROM grants g"
-            " JOIN mailboxes m ON m.id = g.mailbox_id JOIN clients c ON c.client_id = g.client_id"
-            " WHERE g.id = ?",
-            (grant_id,),
-        )
+    # --- add_mailbox links ---------------------------------------------------
+
+    def create_connect_request(self, grant_id: int) -> str:
+        """A one-time code for the add_mailbox link of this grant (earlier links stop working)."""
+        code = new_secret()
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM connect_requests WHERE grant_id = ?", (grant_id,))
+            conn.execute(
+                "INSERT INTO connect_requests (id_hash, grant_id, csrf, expires_at)"
+                " VALUES (?, ?, ?, ?)",
+                (hash_secret(code), grant_id, new_secret(), self.now() + CONNECT_REQUEST_TTL),
+            )
+        return code
+
+    def _pending_connect(
+        self, row: sqlite3.Row | None, *, code: str = "", resume: str | None = None
+    ) -> PendingConnect | None:
         if row is None:
             return None
-        return row["username"], self.box.decrypt(row["credential_enc"]), row["client_name"]
+        return PendingConnect(
+            grant_id=row["grant_id"],
+            id_hash=row["id_hash"],
+            csrf=row["csrf"],
+            client_name=self.client_name_of(row["grant_id"]),
+            mailboxes=self.usernames_of(row["grant_id"]),
+            code=code,
+            resume=resume,
+        )
 
-    def capability_of(self, grant_id: int) -> str | None:
-        row = self.db.one("SELECT capability_enc FROM grants WHERE id = ?", (grant_id,))
-        return self.box.decrypt(row["capability_enc"]) if row and row["capability_enc"] else None
+    def load_connect(self, code: str) -> PendingConnect | None:
+        return self._pending_connect(
+            self.db.one(
+                "SELECT id_hash, grant_id, csrf FROM connect_requests"
+                " WHERE id_hash = ? AND expires_at > ?",
+                (hash_secret(code), self.now()),
+            ),
+            code=code,
+        )
+
+    def load_connect_by_state(self, state: str) -> PendingConnect | None:
+        return self._pending_connect(
+            self.db.one(
+                "SELECT id_hash, grant_id, csrf FROM connect_requests"
+                " WHERE mailcow_state_hash = ? AND expires_at > ?",
+                (hash_secret(state), self.now()),
+            ),
+            resume=state,
+        )
+
+    def set_connect_state(self, pending: PendingConnect, state: str) -> None:
+        self.db.execute(
+            "UPDATE connect_requests SET mailcow_state_hash = ? WHERE id_hash = ?",
+            (hash_secret(state), pending.id_hash),
+        )
+
+    def cancel_connect(self, pending: PendingConnect) -> None:
+        self.db.execute("DELETE FROM connect_requests WHERE id_hash = ?", (pending.id_hash,))
 
     def _decrypt_or_none(self, ciphertext: str) -> str | None:
         try:
@@ -616,7 +834,9 @@ class Provider(
     def live_capabilities(self) -> list[str]:
         """Capabilities of active grants (unreadable ones, e.g. after an ENC_KEY change, are
         left out: those grants can't be used anyway)."""
-        rows = self.db.all("SELECT capability_enc FROM grants WHERE capability_enc IS NOT NULL")
+        rows = self.db.all(
+            "SELECT capability_enc FROM grant_mailboxes WHERE capability_enc IS NOT NULL"
+        )
         found = [self._decrypt_or_none(r["capability_enc"]) for r in rows]
         if None in found:
             log.warning(
@@ -661,6 +881,9 @@ class Provider(
             counts["auth_requests"] = conn.execute(
                 "DELETE FROM auth_requests WHERE expires_at <= ?", (now,)
             ).rowcount
+            counts["connect_requests"] = conn.execute(
+                "DELETE FROM connect_requests WHERE expires_at <= ?", (now,)
+            ).rowcount
             counts["auth_codes"] = conn.execute(
                 "DELETE FROM auth_codes WHERE expires_at <= ?", (now,)
             ).rowcount
@@ -683,6 +906,6 @@ class Provider(
             ).rowcount
             counts["mailboxes"] = conn.execute(
                 "DELETE FROM mailboxes WHERE NOT EXISTS"
-                " (SELECT 1 FROM grants g WHERE g.mailbox_id = mailboxes.id)"
+                " (SELECT 1 FROM grant_mailboxes gm WHERE gm.mailbox_id = mailboxes.id)"
             ).rowcount
         return counts

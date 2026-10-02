@@ -298,7 +298,7 @@ class TestMailcowTools:
         self, app: Harness, broker: BrokerSetup, certs: Path
     ) -> None:
         session = mcp_session(app, certs)
-        capability = app.provider.capability_of(1)
+        capability = app.provider.connected(1)[0].capability
         assert capability is not None
         in_app(app, lambda provider, client: client.deprovision(capability), broker)
         with pytest.raises(ToolFailed, match="signed out"):

@@ -36,15 +36,42 @@ SIGNED_OUT = "This connection has been signed out. Reconnect the app to sign in 
 
 @dataclass(frozen=True)
 class Mailbox:
-    """The mailbox the current request acts as."""
+    """A mailbox the current request can act as."""
 
     grant_id: int
     username: str
     password: str = ""
     client_name: str | None = None
+    login_method: str = "password"
+    capability: str | None = None  # the broker's token (mailcow sign-in only)
 
     def __repr__(self) -> str:
         return f"Mailbox({self.username!r}, grant={self.grant_id})"
+
+
+@dataclass(frozen=True)
+class Connection:
+    """The current request's connection (grant) and its mailboxes."""
+
+    grant_id: int
+    client_name: str | None
+    mailboxes: list[Mailbox]
+
+    def select(self, wanted: str | None) -> Mailbox:
+        """The mailbox a tool call names; it may leave it out only if there is one."""
+        names = ", ".join(m.username for m in self.mailboxes)
+        if wanted is None or not wanted.strip():
+            if len(self.mailboxes) == 1:
+                return self.mailboxes[0]
+            raise ToolError(
+                f"This connection has {len(self.mailboxes)} mailboxes ({names}): "
+                "say which one with the mailbox parameter."
+            )
+        key = wanted.strip().lower()
+        for mailbox in self.mailboxes:
+            if mailbox.username == key:
+                return mailbox
+        raise ToolError(f"{wanted!r} isn't connected. Connected mailboxes: {names}.")
 
 
 class SendLimits:
@@ -136,16 +163,28 @@ class Services:
         token = token or get_access_token()
         return token if isinstance(token, MailboxAccessToken) else None
 
-    def mailbox_for(self, ctx: Context[Any, Any] | None) -> Mailbox:
+    def connection_for(self, ctx: Context[Any, Any] | None) -> Connection:
         token = self._token(ctx)
         if token is None:
             raise ToolError(SIGNED_OUT)
-        credentials = self.provider.credentials_of(token.grant_id)
-        if credentials is None:
+        connected = self.provider.connected(token.grant_id)
+        if not connected:
             raise ToolError(SIGNED_OUT)
-        username, password, client_name = credentials
-        return Mailbox(
-            grant_id=token.grant_id, username=username, password=password, client_name=client_name
+        client_name = self.provider.client_name_of(token.grant_id)
+        return Connection(
+            grant_id=token.grant_id,
+            client_name=client_name,
+            mailboxes=[
+                Mailbox(
+                    grant_id=token.grant_id,
+                    username=m.username,
+                    password=m.credential,
+                    client_name=client_name,
+                    login_method=m.login_method,
+                    capability=m.capability,
+                )
+                for m in connected
+            ],
         )
 
     async def run_imap[T](self, mailbox: Mailbox, work: Callable[[ImapSession], T]) -> T:
@@ -159,7 +198,7 @@ class Services:
 
     async def display_name(self, mailbox: Mailbox) -> str:
         """The mailbox's name in mailcow, for From when the client gives none ("" if unknown)."""
-        if self.broker is None or self.provider.capability_of(mailbox.grant_id) is None:
+        if self.broker is None or mailbox.capability is None:
             return ""  # generic mode, or a password sign-in
         try:
             profile = await self.broker_call(mailbox, "aliases")
@@ -173,30 +212,57 @@ class Services:
 
     async def broker_call(self, mailbox: Mailbox, operation: str, **body: Any) -> dict[str, Any]:
         """A broker operation for this mailbox (mailcow sign-in connections only)."""
-        capability = self.provider.capability_of(mailbox.grant_id)
-        if self.broker is None or capability is None:
+        if self.broker is None or mailbox.capability is None:
             raise MailError(
-                "This needs a connection made with 'Sign in with mailcow' (this one signed in "
-                "with a password)."
+                f"This needs a mailbox connected with 'Sign in with mailcow' ({mailbox.username} "
+                "signed in with a password)."
             )
-        return await self.broker.call(operation, capability=capability, **body)
+        return await self.broker.call(operation, capability=mailbox.capability, **body)
 
     @asynccontextmanager
-    async def tool(self, ctx: Context[Any, Any] | None, name: str) -> AsyncIterator[Mailbox]:
-        """Resolve the mailbox; turn mail errors into tool errors, audited.
+    async def tool(
+        self, ctx: Context[Any, Any] | None, name: str, mailbox: str | None = None
+    ) -> AsyncIterator[Mailbox]:
+        """Resolve the mailbox the call names; turn mail errors into tool errors, audited.
 
-        Rejected credentials end the grant, so the client is asked to sign in again.
+        A mailbox whose credentials are rejected leaves the connection (the last one ends
+        it, so the client is asked to sign in again).
         """
-        mailbox = self.mailbox_for(ctx)
+        connection = self.connection_for(ctx)
+        selected = connection.select(mailbox)
         try:
-            yield mailbox
+            yield selected
         except (CredentialsRejected, CapabilityRejected) as exc:
-            revoked = isinstance(exc, CapabilityRejected)
-            reason = "revoked_capability" if revoked else "credentials_rejected"
-            self.provider.revoke_grant(mailbox.grant_id, reason=reason)
-            self.audit(name, result=reason, mailbox=mailbox.username, client=mailbox.client_name)
-            raise ToolError(SIGNED_OUT if revoked else str(exc)) from exc
+            raise self._disconnected(connection, selected, name, exc) from exc
         except MailError as exc:
             result = re.sub(r"(?<!^)(?=[A-Z])", "_", type(exc).__name__).lower()
-            self.audit(name, result=result, mailbox=mailbox.username, client=mailbox.client_name)
+            self.audit(name, result=result, mailbox=selected.username, client=selected.client_name)
             raise ToolError(str(exc)) from exc
+
+    @asynccontextmanager
+    async def connection_tool(
+        self, ctx: Context[Any, Any] | None, name: str
+    ) -> AsyncIterator[Connection]:
+        """For tools about the connection itself (its list of mailboxes)."""
+        connection = self.connection_for(ctx)
+        try:
+            yield connection
+        except MailError as exc:
+            self.audit(name, result="error", client=connection.client_name)
+            raise ToolError(str(exc)) from exc
+
+    def _disconnected(
+        self, connection: Connection, mailbox: Mailbox, name: str, exc: MailError
+    ) -> ToolError:
+        """The mailbox's password or app password is gone: take it out of the connection."""
+        revoked = isinstance(exc, CapabilityRejected)
+        reason = "revoked_capability" if revoked else "credentials_rejected"
+        self.provider.remove_mailbox(connection.grant_id, mailbox.username, reason=reason)
+        self.audit(name, result=reason, mailbox=mailbox.username, client=mailbox.client_name)
+        if len(connection.mailboxes) > 1:
+            return ToolError(
+                f"{mailbox.username} no longer accepts this connection's password (it may have "
+                "been changed, or the app password deleted), so it was disconnected. The other "
+                "mailboxes are still connected; add_mailbox connects it again."
+            )
+        return ToolError(SIGNED_OUT if revoked else str(exc))

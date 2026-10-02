@@ -12,7 +12,17 @@ from mailcow_mcp.imap import ImapSession
 from mailcow_mcp.limits import MAX_UIDS
 from mailcow_mcp.messages import iso_timestamp
 from mailcow_mcp.services import Services
-from mailcow_mcp.tools.common import NOT_DESTRUCTIVE, READ_ONLY, Moved, move, quarantine, summaries
+from mailcow_mcp.tools.common import (
+    NOT_DESTRUCTIVE,
+    READ_ONLY,
+    MailboxParam,
+    MailboxResult,
+    Moved,
+    move,
+    quarantine,
+    stamped,
+    summaries,
+)
 from mailcow_mcp.untrusted import LISTING_NOTICE, SPAM_NOTICE
 
 
@@ -29,7 +39,7 @@ class SpamItem(BaseModel):
     message_id: str | None = None
 
 
-class SpamList(BaseModel):
+class SpamList(MailboxResult):
     junk_folder: str | None
     items: list[SpamItem]
     note: str | None = None
@@ -67,13 +77,15 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def list_spam(
-        ctx: Context[Any, Any], limit: Annotated[int, Field(ge=1, le=50)] = 20
+        ctx: Context[Any, Any],
+        limit: Annotated[int, Field(ge=1, le=50)] = 20,
+        mailbox: MailboxParam = None,
     ) -> SpamList:
-        async with services.tool(ctx, "list_spam") as mailbox:
-            junk, items = await services.run_imap(mailbox, lambda s: junk_items(s, limit))
+        async with services.tool(ctx, "list_spam", mailbox) as box:
+            junk, items = await services.run_imap(box, lambda s: junk_items(s, limit))
             note = None
             if services.config.mode is Mode.MAILCOW:
-                quarantined, problem = await quarantine(services, mailbox)
+                quarantined, problem = await quarantine(services, box)
                 if problem:
                     note = f"Quarantine not included: {problem}"
                 items += [
@@ -90,9 +102,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 items.sort(key=lambda i: iso_timestamp(i.date), reverse=True)
                 items = items[:limit]
             services.audit(
-                "list_spam", mailbox=mailbox.username, client=mailbox.client_name, count=len(items)
+                "list_spam", mailbox=box.username, client=box.client_name, count=len(items)
             )
-            return SpamList(junk_folder=junk, items=items, note=note)
+            return stamped(SpamList(junk_folder=junk, items=items, note=note), box)
 
     @mcp.tool(
         name="rescue_from_junk",
@@ -110,17 +122,18 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             list[int],
             Field(min_length=1, max_length=MAX_UIDS, description="UIDs in the Junk folder."),
         ],
+        mailbox: MailboxParam = None,
     ) -> Moved:
-        async with services.tool(ctx, "rescue_from_junk") as mailbox:
+        async with services.tool(ctx, "rescue_from_junk", mailbox) as box:
 
             def work(session: ImapSession) -> Moved:
                 return move(services, session, session.require_folder("junk"), uids, "INBOX")
 
-            result = await services.run_imap(mailbox, work)
+            result = await services.run_imap(box, work)
             services.audit(
                 "rescue_from_junk",
-                mailbox=mailbox.username,
-                client=mailbox.client_name,
+                mailbox=box.username,
+                client=box.client_name,
                 count=len(result.moved),
             )
-            return result
+            return stamped(result, box)

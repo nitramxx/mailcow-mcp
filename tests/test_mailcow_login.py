@@ -93,7 +93,7 @@ def test_full_sign_in(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
     (password,) = mailcow.passwords_of("alice@example.test")
     assert password["name"].startswith("MCP: Claude (")
     grant = app.db.one(
-        "SELECT login_method, app_password_id, capability_enc, credential_enc FROM grants"
+        "SELECT login_method, app_password_id, capability_enc, credential_enc FROM grant_mailboxes"
     )
     assert grant is not None
     assert grant["login_method"] == "mailcow"

@@ -1,7 +1,9 @@
-"""The sign-in and consent page that /authorize redirects to.
+"""The sign-in pages: consent for a new connection, and adding a mailbox to one.
 
-GET shows who is asking for access and where it goes; POST checks the password
-with the mail server and sends the browser back to the client with a code.
+/login (where /authorize redirects): shows who is asking for access and where it
+goes; signing in sends the browser back to the client with a code.
+/connect (the add_mailbox link): signs another mailbox into an existing connection.
+Both sign in with mailcow or with a password checked by the mail server.
 """
 
 from __future__ import annotations
@@ -36,8 +38,11 @@ from mailcow_mcp.mailcow_login import (
 )
 from mailcow_mcp.oauth import (
     AUTH_REQUEST_TTL,
+    CONNECT_PATH,
     LOOPBACK_HOSTS,
+    AddResult,
     PendingAuthorization,
+    PendingConnect,
     Provider,
     canonical_url,
 )
@@ -81,7 +86,11 @@ def _same(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
-def form_token(pending: PendingAuthorization, browser_id: str) -> str:
+# A sign-in in progress: for a new connection, or a mailbox to add to one.
+Pending = PendingAuthorization | PendingConnect
+
+
+def form_token(pending: Pending, browser_id: str) -> str:
     """The form's CSRF value: valid only for this sign-in request in this browser."""
     return hmac.new(pending.csrf.encode(), browser_id.encode(), hashlib.sha256).hexdigest()
 
@@ -121,7 +130,11 @@ class LoginPages:
 
     def routes(self) -> list[Route]:
         endpoint = RequestBodyLimitMiddleware(request_response(self.handle), MAX_FORM_BYTES)
-        routes = [Route(LOGIN_PATH, endpoint=endpoint, methods=["GET", "POST"])]
+        connect = RequestBodyLimitMiddleware(request_response(self.handle_connect), MAX_FORM_BYTES)
+        routes = [
+            Route(LOGIN_PATH, endpoint=endpoint, methods=["GET", "POST"]),
+            Route(CONNECT_PATH, endpoint=connect, methods=["GET", "POST"]),
+        ]
         if self.mailcow is not None:
             routes.append(Route(CALLBACK_PATH, self.mailcow_callback, methods=["GET"]))
         return routes
@@ -147,6 +160,7 @@ class LoginPages:
             instance_name=self.config.instance_name,
             stylesheet=STYLESHEET_PATH,
             login_path=LOGIN_PATH,
+            connect_path=CONNECT_PATH,
             max_email=MAX_EMAIL_LENGTH,
             max_password=MAX_PASSWORD_LENGTH,
             **context,
@@ -240,6 +254,48 @@ class LoginPages:
         self._set_cookie(response, self.browser_cookie, browser_id, "lax")
         return response
 
+    def _connect_page(
+        self,
+        request: Request,
+        t: Translator,
+        pending: PendingConnect,
+        *,
+        status_code: int = 200,
+        error: str | None = None,
+        email: str = "",
+    ) -> HTMLResponse:
+        browser_id = self._browser_id(request) or new_secret()
+        response = self._render(
+            "connect.html",
+            t,
+            status_code,
+            form_target=_origin(self.mailcow.base_url) if self.mailcow is not None else None,
+            mailcow_login=self.mailcow is not None,
+            client_name=pending.client_name,
+            connected=", ".join(pending.mailboxes),
+            code=pending.code,
+            resume=pending.resume or "",
+            csrf=form_token(pending, browser_id),
+            password_login=self.config.allow_password_login,
+            error=error,
+            email=email,
+        )
+        self._set_cookie(response, self.browser_cookie, browser_id, "lax")
+        return response
+
+    def _page(
+        self,
+        request: Request,
+        t: Translator,
+        pending: Pending,
+        *,
+        status_code: int = 200,
+        error: str | None = None,
+        email: str = "",
+    ) -> HTMLResponse:
+        page = self._login_page if isinstance(pending, PendingAuthorization) else self._connect_page
+        return page(request, t, pending, status_code=status_code, error=error, email=email)  # type: ignore[arg-type]
+
     # --- handlers ------------------------------------------------------------
 
     async def handle(self, request: Request) -> Response:
@@ -256,11 +312,24 @@ class LoginPages:
             return self._expired(t)
         return self._login_page(request, t, pending)
 
-    async def _post(self, request: Request, t: Translator, ip: str) -> Response:
+    def _cross_origin(self, request: Request) -> bool:
         origin = request.headers.get("origin")
         # Our page sends its Origin (Referrer-Policy same-origin). "null" comes from
         # sandboxed frames and privacy redirects, never from our own form.
-        if origin is not None and (origin == "null" or canonical_url(origin) != self.public_origin):
+        return origin is not None and (
+            origin == "null" or canonical_url(origin) != self.public_origin
+        )
+
+    def _form_matches(self, request: Request, pending: Pending | None, csrf: str) -> bool:
+        browser_id = self._browser_id(request)
+        return (
+            pending is not None
+            and browser_id is not None
+            and _same(csrf, form_token(pending, browser_id))
+        )
+
+    async def _post(self, request: Request, t: Translator, ip: str) -> Response:
+        if self._cross_origin(request):
             return self._message(t, "expired_title", "error_cross_origin", 403)
         form = await request.form()
 
@@ -273,16 +342,56 @@ class LoginPages:
         else:
             # A retry from the error page after mailcow's redirect back.
             pending = await self.provider.load_pending_by_state(field("resume"))
-        browser_id = self._browser_id(request)
-        if (
-            pending is None
-            or browser_id is None
-            or not _same(field("csrf"), form_token(pending, browser_id))
-        ):
+        if not self._form_matches(request, pending, field("csrf")):
             return self._expired(t)
+        assert pending is not None  # noqa: S101 - checked by _form_matches
 
         if field("action") == "deny":
             return RedirectResponse(self.provider.deny(pending), status_code=303)
+        return await self._sign_in(request, t, pending, ip, field)
+
+    async def handle_connect(self, request: Request) -> Response:
+        """The add_mailbox link: sign another mailbox into an existing connection."""
+        t = self._translator(request)
+        ip = client_ip.get() or "unknown"
+        if request.method == "GET":
+            if not self.page_limit.hit(client_key(ip)):
+                return self._message(t, "rate_limited_title", "error_rate_limited", 429)
+            pending = self.provider.load_connect(request.query_params.get("code", ""))
+            if pending is None:
+                return self._message(t, "connect_expired_title", "connect_expired_body", 400)
+            return self._connect_page(request, t, pending)
+
+        if self._cross_origin(request):
+            return self._message(t, "expired_title", "error_cross_origin", 403)
+        form = await request.form()
+
+        def field(name: str) -> str:
+            value = form.get(name)
+            return value if isinstance(value, str) else ""
+
+        if field("code"):
+            connect = self.provider.load_connect(field("code"))
+        else:
+            connect = self.provider.load_connect_by_state(field("resume"))
+        if not self._form_matches(request, connect, field("csrf")):
+            return self._message(t, "connect_expired_title", "connect_expired_body", 400)
+        assert connect is not None  # noqa: S101 - checked by _form_matches
+
+        if field("action") == "deny":
+            self.provider.cancel_connect(connect)
+            return self._message(t, "connect_cancelled_title", "connect_cancelled_body", 200)
+        return await self._sign_in(request, t, connect, ip, field)
+
+    async def _sign_in(
+        self,
+        request: Request,
+        t: Translator,
+        pending: Pending,
+        ip: str,
+        field: Callable[[str], str],
+    ) -> Response:
+        """The sign-in buttons of either page: with mailcow, or with a password."""
         if field("action") == "mailcow" and self.mailcow is not None:
             return self._start_mailcow(request, t, pending, ip)
         if not self.config.allow_password_login:
@@ -290,15 +399,13 @@ class LoginPages:
 
         if not self.attempt_limit.hit(client_key(ip)):
             self.audit("login", result="rate_limited", ip=ip, client=pending.client_name)
-            return self._login_page(
-                request, t, pending, status_code=429, error=t("error_rate_limited")
-            )
+            return self._page(request, t, pending, status_code=429, error=t("error_rate_limited"))
 
         email_input = field("email")
         username = normalize_email(email_input)
         password = field("password")
         if username is None:
-            return self._login_page(
+            return self._page(
                 request,
                 t,
                 pending,
@@ -307,14 +414,14 @@ class LoginPages:
                 email=email_input[:MAX_EMAIL_LENGTH],
             )
         if not password or len(password) > MAX_PASSWORD_LENGTH or "\x00" in password:
-            return self._login_page(
+            return self._page(
                 request, t, pending, status_code=401, error=t("error_credentials"), email=username
             )
 
         domain = username.rpartition("@")[2]
         if self.config.allowed_domains and domain not in self.config.allowed_domains:
             self.audit("login", result="domain_not_allowed", mailbox=username, ip=ip)
-            return self._login_page(
+            return self._page(
                 request,
                 t,
                 pending,
@@ -326,42 +433,90 @@ class LoginPages:
         # Counted before the check, so parallel attempts can't all get through.
         if not self.failure_limit.hit(username):
             self.audit("login", result="rate_limited", mailbox=username, ip=ip)
-            return self._login_page(
+            return self._page(
                 request, t, pending, status_code=429, error=t("error_rate_limited"), email=username
             )
 
         result = await self.verifier(username, password)
         if result is LoginResult.UNAVAILABLE:
             self.audit("login", result="server_unavailable", mailbox=username, ip=ip)
-            return self._login_page(
+            return self._page(
                 request, t, pending, status_code=503, error=t("error_unavailable"), email=username
             )
         if result is LoginResult.INVALID:
             self.audit("login", result="invalid_credentials", mailbox=username, ip=ip)
-            return self._login_page(
+            return self._page(
                 request, t, pending, status_code=401, error=t("error_credentials"), email=username
             )
 
         self.failure_limit.reset(username)
-        redirect = self.provider.complete(
-            pending, username=username, credential=password, login_method="password"
+        done, _ = self._complete(
+            t, pending, username=username, credential=password, login_method="password"
         )
-        if redirect is None:
-            return self._expired(t)
-        return RedirectResponse(redirect, status_code=303, headers={"Cache-Control": "no-store"})
+        return done
+
+    def _complete(
+        self,
+        t: Translator,
+        pending: Pending,
+        *,
+        username: str,
+        credential: str,
+        login_method: str,
+        app_password_id: int | None = None,
+        capability: str | None = None,
+    ) -> tuple[Response, bool]:
+        """Finish a sign-in: (the response, whether the credential is now in use)."""
+        if isinstance(pending, PendingAuthorization):
+            redirect = self.provider.complete(
+                pending,
+                username=username,
+                credential=credential,
+                login_method=login_method,
+                app_password_id=app_password_id,
+                capability=capability,
+            )
+            if redirect is None:
+                return self._expired(t), False
+            return RedirectResponse(
+                redirect, status_code=303, headers={"Cache-Control": "no-store"}
+            ), True
+        added = self.provider.add_mailbox(
+            pending,
+            username=username,
+            credential=credential,
+            login_method=login_method,
+            app_password_id=app_password_id,
+            capability=capability,
+        )
+        client = pending.client_name or t("client_unnamed")
+        if added is AddResult.ADDED:
+            body = t("connect_done_body", mailbox=username, client=client)
+            return self._render(
+                "message.html", t, 200, title=t("connect_done_title"), body=body
+            ), True
+        if added is AddResult.ALREADY_CONNECTED:
+            body = t("connect_already_body", mailbox=username, client=client)
+            return self._render(
+                "message.html", t, 409, title=t("connect_already_title"), body=body
+            ), False
+        if added is AddResult.FULL:
+            return self._message(t, "connect_full_title", "connect_full_body", 409), False
+        return self._message(t, "connect_expired_title", "connect_expired_body", 400), False
 
     # --- sign in with mailcow ------------------------------------------------
 
     def _start_mailcow(
-        self, request: Request, t: Translator, pending: PendingAuthorization, ip: str
+        self, request: Request, t: Translator, pending: Pending, ip: str
     ) -> Response:
         assert self.mailcow is not None  # noqa: S101 - checked by the caller
         if not self.attempt_limit.hit(client_key(ip)):
-            return self._login_page(
-                request, t, pending, status_code=429, error=t("error_rate_limited")
-            )
+            return self._page(request, t, pending, status_code=429, error=t("error_rate_limited"))
         state = new_secret()
-        self.provider.set_mailcow_state(pending, state)
+        if isinstance(pending, PendingAuthorization):
+            self.provider.set_mailcow_state(pending, state)
+        else:
+            self.provider.set_connect_state(pending, state)
         response = RedirectResponse(self.mailcow.authorize_url(state), status_code=303)
         # Binds the callback to this browser: mailcow's redirect back must carry the
         # same state as the cookie (Lax: sent on that top-level navigation).
@@ -369,9 +524,9 @@ class LoginPages:
         return response
 
     def _mailcow_error(
-        self, request: Request, t: Translator, pending: PendingAuthorization, key: str, status: int
+        self, request: Request, t: Translator, pending: Pending, key: str, status: int
     ) -> Response:
-        response = self._login_page(request, t, pending, status_code=status, error=t(key))
+        response = self._page(request, t, pending, status_code=status, error=t(key))
         self._clear_state(request, response)
         return response
 
@@ -390,7 +545,9 @@ class LoginPages:
         if not state or not _same(state, cookie):
             self.audit("login", result="state_mismatch", ip=ip)
             return self._expired(t)
-        pending = await self.provider.load_pending_by_state(state)
+        pending: Pending | None = await self.provider.load_pending_by_state(state)
+        if pending is None:
+            pending = self.provider.load_connect_by_state(state)
         if pending is None:
             return self._expired(t)
         if request.query_params.get("error"):
@@ -430,11 +587,11 @@ class LoginPages:
         self,
         request: Request,
         t: Translator,
-        pending: PendingAuthorization,
+        pending: Pending,
         provisioned: dict[str, Any],
         ip: str,
     ) -> Response:
-        """Checks the new app password and hands out the code; undoes it on any refusal."""
+        """Checks the new app password and completes the sign-in; undoes it on any refusal."""
         username = str(provisioned["username"])
         capability = str(provisioned["capability"])
         password = str(provisioned["app_password"])
@@ -449,7 +606,8 @@ class LoginPages:
             self.audit("login", result="app_password_rejected", mailbox=username, ip=ip)
             return self._mailcow_error(request, t, pending, "error_mailcow_failed", 502)
 
-        redirect = self.provider.complete(
+        response, kept = self._complete(
+            t,
             pending,
             username=username,
             credential=password,
@@ -457,12 +615,8 @@ class LoginPages:
             app_password_id=int(provisioned["app_password_id"]),
             capability=capability,
         )
-        if redirect is None:
+        if not kept:
             await self._undo(capability)
-            return self._expired(t)
-        response = RedirectResponse(
-            redirect, status_code=303, headers={"Cache-Control": "no-store"}
-        )
         self._clear_state(request, response)
         return response
 

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ t("connect_title") }}{% endblock %}
+{% block content %}
+<h1>{{ t("connect_heading") }}</h1>
+<p class="client">{{ t("connect_to", client=client_name or t("client_unnamed"), mailboxes=connected) }}</p>
+<p class="muted">{{ t("connect_check", client=client_name or t("client_unnamed")) }}</p>
+{% if mailcow_login %}<p class="muted">{{ t("connect_session_hint") }}</p>{% endif %}
+
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+<form method="post" action="{{ connect_path }}" class="login">
+  {% if code %}<input type="hidden" name="code" value="{{ code }}">{% endif %}
+  {% if resume %}<input type="hidden" name="resume" value="{{ resume }}">{% endif %}
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if mailcow_login %}
+  <button type="submit" name="action" value="mailcow" class="primary" formnovalidate>{{ t("mailcow_button") }}</button>
+  {% if password_login %}<p class="divider">{{ t("or_password") }}</p>{% endif %}
+  {% endif %}
+  {% if password_login %}
+  <label for="email">{{ t("email_label") }}</label>
+  <input id="email" name="email" type="email" autocomplete="username" required maxlength="{{ max_email }}" value="{{ email }}" autofocus>
+  <label for="password">{{ t("password_label") }}</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="{{ max_password }}">
+  <p class="hint">{{ t("password_hint") }}</p>
+  <button type="submit" name="action" value="login" class="{{ 'secondary' if mailcow_login else 'primary' }}">{{ t("connect_submit") }}</button>
+  {% endif %}
+  <button type="submit" name="action" value="deny" class="secondary" formnovalidate>{{ t("cancel") }}</button>
+</form>
+
+<footer>
+  {% if mailcow_login %}<p>{{ t("privacy_mailcow") }}</p>{% endif %}
+  {% if password_login %}<p>{{ t("privacy_password") }}</p>{% endif %}
+</footer>
+{% endblock %}

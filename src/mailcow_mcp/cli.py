@@ -156,7 +156,8 @@ def cmd_users(args: argparse.Namespace) -> int:
         "SELECT m.username, count(g.id) AS grants, max(g.last_used_at) AS last_used,"
         " m.last_login_at, group_concat(DISTINCT CASE WHEN g.id IS NOT NULL"
         " THEN coalesce(c.client_name, '?') END) AS clients"
-        " FROM mailboxes m LEFT JOIN grants g ON g.mailbox_id = m.id"
+        " FROM mailboxes m LEFT JOIN grant_mailboxes gm ON gm.mailbox_id = m.id"
+        " LEFT JOIN grants g ON g.id = gm.grant_id"
         " LEFT JOIN clients c ON c.client_id = g.client_id"
         " GROUP BY m.id ORDER BY m.username"
     )
@@ -221,11 +222,11 @@ def cmd_revoke(args: argparse.Namespace) -> int:
     )
     if username is not None:
         count = provider.revoke_mailbox(username)
-        print(f"revoked {count} connection(s) of {username}")
+        print(f"disconnected {username} from {count} connection(s)")
     else:
         mailboxes = provider.mailboxes()
         count = sum(provider.revoke_mailbox(m) for m in mailboxes)
-        print(f"revoked {count} connection(s) of {len(mailboxes)} mailbox(es)")
+        print(f"disconnected {len(mailboxes)} mailbox(es) from their connections")
     if config.mode is Mode.MAILCOW:
         return _deprovision_now(config, provider, everything=username is None)
     return 0

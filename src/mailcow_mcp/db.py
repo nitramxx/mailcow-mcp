@@ -15,6 +15,7 @@ from pathlib import Path
 
 DB_FILENAME = "mailcow-mcp.sqlite3"
 _MIGRATION_RE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
+_FOREIGN_KEYS_OFF = "-- foreign_keys: off"
 
 
 class Database:
@@ -80,12 +81,23 @@ class Database:
         newest = migrations[-1][0] if migrations else 0
         applied: list[str] = []
         for number, name, sql in migrations:
-            with self.transaction() as conn:
-                if number <= self.version:
-                    continue
-                for statement in _statements(sql):
-                    conn.execute(statement)
-                conn.execute(f"PRAGMA user_version = {number}")
+            # Rebuilding a referenced table (drop + rename) needs foreign keys off, or the drop
+            # would cascade; the switch only works outside a transaction.
+            keys_off = sql.startswith(_FOREIGN_KEYS_OFF)
+            if keys_off:
+                self.conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                with self.transaction() as conn:
+                    if number <= self.version:
+                        continue
+                    for statement in _statements(sql):
+                        conn.execute(statement)
+                    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                        raise RuntimeError(f"migration {name} broke a foreign key")
+                    conn.execute(f"PRAGMA user_version = {number}")
+            finally:
+                if keys_off:
+                    self.conn.execute("PRAGMA foreign_keys = ON")
             applied.append(name)
         if self.version > newest:
             raise RuntimeError(

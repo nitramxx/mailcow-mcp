@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import Context
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, ToolAnnotations
 from pydantic import BaseModel, Field
 
 from mailcow_mcp.broker_client import CapabilityRejected
@@ -42,7 +42,24 @@ Uids = Annotated[
 ]
 
 
-class Moved(BaseModel):
+MailboxParam = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Which connected mailbox to use: an address from list_mailboxes. Required when "
+            "more than one mailbox is connected."
+        )
+    ),
+]
+
+
+class MailboxResult(BaseModel):
+    """A tool result about one mailbox: says which."""
+
+    mailbox: str = Field(default="", description="The connected mailbox this is about.")
+
+
+class Moved(MailboxResult):
     from_folder: str
     to_folder: str
     moved: list[int]
@@ -51,13 +68,26 @@ class Moved(BaseModel):
 
 
 async def with_session[T](
-    services: Services, ctx: Context[Any, Any], name: str, work: Callable[[ImapSession], T]
+    services: Services,
+    ctx: Context[Any, Any],
+    name: str,
+    work: Callable[[ImapSession], T],
+    mailbox: str | None,
 ) -> T:
-    """Run ``work`` with an IMAP session of the signed-in mailbox, as tool ``name`` (audited)."""
-    async with services.tool(ctx, name) as mailbox:
-        result = await services.run_imap(mailbox, work)
-        services.audit(name, mailbox=mailbox.username, client=mailbox.client_name)
-        return result
+    """Run ``work`` with an IMAP session of the mailbox the call names, as tool ``name``."""
+    async with services.tool(ctx, name, mailbox) as box:
+        result = await services.run_imap(box, work)
+        services.audit(name, mailbox=box.username, client=box.client_name)
+        return stamped(result, box)
+
+
+def stamped[T](result: T, mailbox: Mailbox) -> T:
+    """The result, saying which mailbox it is about."""
+    if isinstance(result, MailboxResult):
+        result.mailbox = mailbox.username
+    elif isinstance(result, CallToolResult) and isinstance(result.structured_content, dict):
+        result.structured_content["mailbox"] = mailbox.username
+    return result
 
 
 def summaries(session: ImapSession, folder: str, uids: list[int]) -> list[MessageSummary]:
