@@ -351,33 +351,21 @@ class TestEncoding:
 
 
 class TestDefaults:
-    def test_configured_display_name(self) -> None:
-        names = {"urx@lexorate.com": "Martin Urx"}
-        composed = compose(
-            build(from_address="URX@lexorate.com"),
-            username="urx@lexorate.com",
-            max_message_bytes=MB,
-            from_names=names,
-        )
-        assert parse_message(composed.as_bytes())["From"] == "Martin Urx <URX@lexorate.com>"
+    def test_mailbox_name_is_the_default(self) -> None:
+        def from_of(**fields: object) -> str:
+            composed = compose(
+                build(**fields),
+                username="urx@lexorate.com",
+                max_message_bytes=MB,
+                default_name="Martin Urx",
+            )
+            return str(parse_message(composed.as_bytes())["From"])
+
+        assert from_of() == "Martin Urx <urx@lexorate.com>"
         # The caller's from_name wins; a name inside from_address comes second.
-        explicit = compose(
-            build(from_name="Someone"),
-            username="urx@lexorate.com",
-            max_message_bytes=MB,
-            from_names=names,
-        )
-        assert parse_message(explicit.as_bytes())["From"].addresses[0].display_name == "Someone"
-        inline = compose(
-            build(from_address="Team <urx@lexorate.com>"),
-            username="urx@lexorate.com",
-            max_message_bytes=MB,
-            from_names=names,
-        )
-        assert parse_message(inline.as_bytes())["From"].addresses[0].display_name == "Team"
-        unnamed = compose(
-            build(), username="other@lexorate.com", max_message_bytes=MB, from_names=names
-        )
+        assert from_of(from_name="Someone") == "Someone <urx@lexorate.com>"
+        assert from_of(from_address="Team <urx@lexorate.com>") == "Team <urx@lexorate.com>"
+        unnamed = compose(build(), username="other@lexorate.com", max_message_bytes=MB)
         assert parse_message(unnamed.as_bytes())["From"] == "other@lexorate.com"
 
     def test_date_in_the_configured_time_zone(self) -> None:

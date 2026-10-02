@@ -6,7 +6,7 @@ import base64
 import binascii
 import re
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 from email.headerregistry import Address
@@ -316,12 +316,6 @@ def transfer_encoding(text: str) -> str:
     return "quoted-printable"
 
 
-def default_from_name(from_names: Mapping[str, str], address: str) -> str:
-    """The configured display name for an address (matched like compose normalizes it)."""
-    normalized = normalize_address(address)
-    return from_names.get(normalized.lower(), "") if normalized else ""
-
-
 def new_message_id(domain: str) -> str:
     return f"<{secrets.token_hex(16)}@{domain}>"
 
@@ -331,12 +325,12 @@ def compose(
     *,
     username: str,
     max_message_bytes: int,
-    from_names: Mapping[str, str] | None = None,
+    default_name: str = "",
     timezone: tzinfo | None = None,
 ) -> Composed:
     """Validate and build the message. Raises InvalidInput / LimitExceeded.
 
-    ``from_names``: default display names by sender address, used when the caller gives none.
+    ``default_name``: the display name when the caller gives none (the mailbox's name).
     ``timezone``: for the Date header (default: the system's local time zone).
     """
     to = parse_addresses(draft.to, "to")
@@ -352,10 +346,8 @@ def compose(
     from_name = header_text(draft.from_name, "from_name", MAX_NAME_LENGTH)
     sender_address = parse_address(draft.from_address or username, "from_address")
     sender = sender_address.addr_spec
-    # The caller's name, else a name given in from_address, else the configured default.
-    from_name = (
-        from_name or sender_address.display_name or default_from_name(from_names or {}, sender)
-    )
+    # The caller's name, else a name given in from_address, else the mailbox's name.
+    from_name = from_name or sender_address.display_name or default_name
 
     if (draft.body_markdown is None) == (draft.body_text is None):
         raise InvalidInput("Give exactly one of body_markdown or body_text.")

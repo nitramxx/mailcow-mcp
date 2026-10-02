@@ -35,6 +35,7 @@ class MockMailcow:
     deny: bool = False
     app_passwords: list[dict[str, Any]] = field(default_factory=list)
     aliases: list[dict[str, Any]] = field(default_factory=list)
+    names: dict[str, str] = field(default_factory=dict)  # mailbox → full name
     quarantine: list[dict[str, Any]] = field(default_factory=list)
     logs: list[dict[str, Any]] = field(default_factory=list)
     released: list[int] = field(default_factory=list)
@@ -190,6 +191,11 @@ class MockMailcow:
                 if self.on_app_password:
                     self.on_app_password(p["mailbox"], None)
             return JSONResponse(ok)
+        if path.startswith("get/mailbox/"):
+            mailbox = path.rsplit("/", 1)[1]
+            return JSONResponse(
+                {"username": mailbox, "name": self.names.get(mailbox, ""), "active": 1}
+            )
         if path == "get/alias/all":
             return JSONResponse(self.aliases or {})
         if path == "get/quarantine/all":

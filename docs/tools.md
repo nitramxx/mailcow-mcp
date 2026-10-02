@@ -164,7 +164,9 @@ with the receiving server's answer. Uses mailcow's recent mail log, so it covers
 
 ### my_addresses
 
-Your mailbox address and its aliases (valid `from_address` values).
+Your mailbox address, its aliases (valid `from_address` values) and its name in mailcow. Mail
+sent without `from_name` shows that name in From (generic mode and password sign-ins: just the
+address).
 
 > "Send it from my sales@ alias."
 

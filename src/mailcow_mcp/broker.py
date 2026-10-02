@@ -10,7 +10,7 @@ Operations (POST /v1/<operation>, JSON):
 - provision(mailcow_oauth_token, client_name)
 - deprovision(capability)
 - reconcile(capabilities)          app passwords the app no longer holds are deleted
-- aliases(capability)
+- aliases(capability)             the mailbox's aliases and full name
 - quarantine_list(capability)
 - quarantine_release(capability, id)
 - quarantine_delete(capability, id)
@@ -173,7 +173,8 @@ class Broker:
         self._clock = clock
         # Per mailbox: provisioning vs. reconcile (which deletes unknown "MCP: " app passwords).
         self._locks: dict[str, anyio.Lock] = {}
-        self._aliases: dict[str, tuple[float, list[str]]] = {}
+        # Per mailbox: (expiry, aliases, full name), from mailcow.
+        self._profiles: dict[str, tuple[float, list[str], str]] = {}
         self._logs: tuple[float, list[dict[str, Any]]] | None = None
         self.provision_limit = RateLimiter(PROVISIONS_PER_MAILBOX_HOUR, HOUR, clock=clock)
         self.operation_limit = RateLimiter(120, 60, clock=clock)
@@ -209,13 +210,18 @@ class Broker:
             raise BrokerError(429, "rate_limited", "too many requests for this mailbox")
         return capability
 
-    async def owned_addresses(self, mailbox: str) -> set[str]:
-        cached = self._aliases.get(mailbox)
+    async def profile(self, mailbox: str) -> tuple[list[str], str]:
+        """The mailbox's aliases and full name (cached for a few minutes)."""
+        cached = self._profiles.get(mailbox)
         if cached and cached[0] > self._clock():
-            aliases = cached[1]
-        else:
-            aliases = await self.api.aliases(mailbox)
-            self._aliases[mailbox] = (self._clock() + ALIAS_CACHE_SECONDS, aliases)
+            return cached[1], cached[2]
+        aliases = await self.api.aliases(mailbox)
+        name = await self.api.mailbox_name(mailbox)
+        self._profiles[mailbox] = (self._clock() + ALIAS_CACHE_SECONDS, aliases, name)
+        return aliases, name
+
+    async def owned_addresses(self, mailbox: str) -> set[str]:
+        aliases, _ = await self.profile(mailbox)
         return {mailbox, *aliases}
 
     # --- operations ----------------------------------------------------------
@@ -375,9 +381,9 @@ class Broker:
 
     async def aliases(self, body: dict[str, Any]) -> dict[str, Any]:
         capability = self.authorize(body.get("capability"), "aliases")
-        addresses = await self.owned_addresses(capability.mailbox)
-        self.audit("aliases", mailbox=capability.mailbox, count=len(addresses) - 1)
-        return {"mailbox": capability.mailbox, "aliases": sorted(addresses - {capability.mailbox})}
+        aliases, name = await self.profile(capability.mailbox)
+        self.audit("aliases", mailbox=capability.mailbox, count=len(aliases))
+        return {"mailbox": capability.mailbox, "aliases": sorted(set(aliases)), "name": name}
 
     @staticmethod
     def _quarantine_view(item: dict[str, Any]) -> dict[str, Any]:

@@ -8,6 +8,7 @@ messages never contain secret values.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import re
 import ssl
@@ -23,6 +24,13 @@ from cryptography.fernet import Fernet
 
 IMAGE = "ghcr.io/nitramxx/mailcow-mcp"
 GENERATE_KEY_HINT = f"generate one with: docker run --rm {IMAGE} generate-key"
+
+log = logging.getLogger(__name__)
+
+# Settings that are gone, with what replaced them (reported as a warning, not an error).
+REMOVED_SETTINGS = {
+    "FROM_NAMES": "removed in 0.2.0: the display name is the mailbox's name in mailcow",
+}
 
 DEFAULT_APP_PORT = 8090
 DEFAULT_BROKER_PORT = 8091
@@ -97,7 +105,6 @@ class AppConfig:
     allowed_domains: tuple[str, ...]
     enc_key: str = field(repr=False)
     save_sent: SaveSent
-    from_names: dict[str, str]
     timezone: tzinfo | None  # None: the system's local time zone
     send_limit_hour: int
     send_limit_day: int
@@ -351,38 +358,6 @@ class _Reader:
                 result[role] = value
         return result
 
-    def from_names(self, name: str) -> dict[str, str]:
-        """``a@example.com=Name; b@example.com=Other`` (or one per line)."""
-        value = self.raw(name)
-        result: dict[str, str] = {}
-        if value is None:
-            return result
-        for entry in filter(None, (e.strip() for e in re.split(r"[;\n]", value))):
-            # The name starts at the first "=" after the "@": local parts may contain "=".
-            at = entry.find("@")
-            eq = entry.find("=", at) if at > 0 else -1
-            if eq < 0:
-                self.error(name, f"expected address=Name entries (got {entry!r})")
-                continue
-            local, domain = entry[:at].strip(), entry[at + 1 : eq].strip()
-            display = entry[eq + 1 :].strip()
-            try:
-                domain = domain.encode("idna").decode("ascii").lower()
-            except UnicodeError:
-                domain = ""
-            if not local or not _HOSTNAME_RE.match(domain):
-                self.error(name, f"expected address=Name entries (got {entry!r})")
-                continue
-            if (
-                not display
-                or len(display) > 100
-                or any(ord(c) < 32 or ord(c) == 127 for c in display)
-            ):
-                self.error(name, f"invalid display name for {local}@{domain}")
-                continue
-            result[f"{local.lower()}@{domain}"] = display
-        return result
-
     def timezone(self, name: str) -> tzinfo | None:
         value = self.raw(name)
         if value is None:
@@ -518,7 +493,6 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         allowed_domains=r.domains("ALLOWED_DOMAINS"),
         enc_key=r.key("ENC_KEY"),
         save_sent=r.choice("SAVE_SENT", SaveSent, SaveSent.ALWAYS),
-        from_names=r.from_names("FROM_NAMES"),
         timezone=r.timezone("TIMEZONE"),
         send_limit_hour=send_limit_hour,
         send_limit_day=send_limit_day,
@@ -532,6 +506,9 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         folder_names=r.folders(),
     )
     r.raise_if_errors(f"app configuration (MODE={mode.value})")
+    for name, why in REMOVED_SETTINGS.items():
+        if r.raw(name) is not None:
+            log.warning("%s is no longer used (%s); remove it from app.env", name, why)
     return config
 
 

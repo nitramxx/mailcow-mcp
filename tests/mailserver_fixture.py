@@ -18,6 +18,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from email.message import EmailMessage
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+
+from mailcow_mcp.mime import parse_message
 
 IMAGE = "mailcow-mcp-test-mailserver"
 SERVER_NAME = "mail.test"
@@ -241,3 +244,30 @@ def mailserver(tmp_path_factory: pytest.TempPathFactory) -> Iterator[MailServer]
         yield server
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+
+
+def wait_for(
+    mailserver: MailServer, user: tuple[str, str], message_id: str, folder: str = "INBOX"
+) -> EmailMessage:
+    return parse_message(wait_for_raw(mailserver, user, message_id, folder))
+
+
+def wait_for_raw(
+    mailserver: MailServer, user: tuple[str, str], message_id: str, folder: str = "INBOX"
+) -> bytes:
+    deadline = time.monotonic() + 20
+    while True:
+        conn = mailserver.imap(user)
+        try:
+            conn.select(f'"{folder}"', readonly=True)
+            _, data = conn.uid("SEARCH", "HEADER", "Message-ID", message_id)
+            uids = data[0].split()
+            if uids:
+                _, fetched = conn.uid("FETCH", uids[-1], "(BODY.PEEK[])")
+                raw: bytes = next(part[1] for part in fetched if isinstance(part, tuple))
+                return raw
+        finally:
+            conn.logout()
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{message_id} did not arrive in {user[0]}'s {folder}")
+        time.sleep(0.3)

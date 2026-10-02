@@ -9,7 +9,7 @@ import pytest
 
 from conftest import Harness, ToolFailed
 from mailcow_fixtures import BrokerSetup, make_mailcow_harness, mcp_session
-from mailserver_fixture import MailServer
+from mailserver_fixture import BOB, MailServer, wait_for
 from mock_mailcow import MockMailcow, RunningMailcow
 
 pytestmark = pytest.mark.integration
@@ -30,8 +30,9 @@ def app(
 
 
 def test_app_password_works_and_deleting_it_disconnects(
-    app: Harness, mailcow: MockMailcow, certs: Path
+    app: Harness, mailcow: MockMailcow, certs: Path, mailserver: MailServer
 ) -> None:
+    mailcow.names["alice@example.test"] = "Alice Nováková"
     session = mcp_session(app, certs)
     folders = {f["name"] for f in session.call("list_folders")["folders"]}
     assert {"INBOX", "Sent", "Junk"} <= folders
@@ -39,6 +40,9 @@ def test_app_password_works_and_deleting_it_disconnects(
         "send_email", to=["bob@example.test"], subject="via app password", body_text="hi"
     )
     assert sent["accepted"] == ["bob@example.test"]
+    # Without from_name, From carries the mailbox's name in mailcow.
+    received = wait_for(mailserver, BOB, sent["message_id"])
+    assert received["From"] == "Alice Nováková <alice@example.test>"
 
     # The user deletes the app password in mailcow.
     assert len(mailcow.passwords_of("alice@example.test")) == 1

@@ -206,7 +206,15 @@ class MailcowApi:
         if ids:
             await self._write("/api/v1/delete/app-passwd", [str(i) for i in ids])
 
-    # --- aliases, quarantine, logs -------------------------------------------
+    # --- mailboxes, aliases, quarantine, logs ---------------------------------
+
+    async def mailbox_name(self, username: str) -> str:
+        """The mailbox's full name as set in mailcow ("" if none)."""
+        data = await self._get(f"/api/v1/get/mailbox/{quote(username, safe='@')}")
+        if isinstance(data, list):
+            data = data[0] if data and isinstance(data[0], dict) else {}
+        name = data.get("name") if isinstance(data, dict) else None
+        return " ".join(name.split()) if isinstance(name, str) else ""
 
     async def aliases(self, mailbox: str) -> list[str]:
         """Active aliases that deliver to the mailbox."""

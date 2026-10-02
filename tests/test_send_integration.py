@@ -15,7 +15,7 @@ from mailcow_mcp.imap import ImapSession
 from mailcow_mcp.mime import parse_message, walk_parts
 
 from conftest import PNG, Harness, McpSession, ToolFailed, app_config, make_harness
-from mailserver_fixture import ALICE, ALICE_ALIAS, BOB, MailServer
+from mailserver_fixture import ALICE, ALICE_ALIAS, BOB, MailServer, wait_for, wait_for_raw
 
 pytestmark = pytest.mark.integration
 
@@ -28,33 +28,6 @@ def server(mailserver: MailServer) -> Iterator[Harness]:
 @pytest.fixture
 def alice(server: Harness) -> McpSession:
     return server.session(*ALICE)
-
-
-def wait_for(
-    mailserver: MailServer, user: tuple[str, str], message_id: str, folder: str = "INBOX"
-) -> EmailMessage:
-    return parse_message(wait_for_raw(mailserver, user, message_id, folder))
-
-
-def wait_for_raw(
-    mailserver: MailServer, user: tuple[str, str], message_id: str, folder: str = "INBOX"
-) -> bytes:
-    deadline = time.monotonic() + 20
-    while True:
-        conn = mailserver.imap(user)
-        try:
-            conn.select(f'"{folder}"', readonly=True)
-            _, data = conn.uid("SEARCH", "HEADER", "Message-ID", message_id)
-            uids = data[0].split()
-            if uids:
-                _, fetched = conn.uid("FETCH", uids[-1], "(BODY.PEEK[])")
-                raw: bytes = next(part[1] for part in fetched if isinstance(part, tuple))
-                return raw
-        finally:
-            conn.logout()
-        if time.monotonic() > deadline:
-            raise AssertionError(f"{message_id} did not arrive in {user[0]}'s {folder}")
-        time.sleep(0.3)
 
 
 def flags_of(mailserver: MailServer, user: tuple[str, str], folder: str, message_id: str) -> bytes:

@@ -360,11 +360,13 @@ class TestMailboxScopedOperations:
                 "active": "1",
             },
         ]
+        mailcow.names["alice@example.test"] = "  Alice   Nováková "
         result = await provision(broker, mailcow)
         response = await broker.call("aliases", capability=result["capability"])
         assert response.json() == {
             "mailbox": "alice@example.test",
             "aliases": ["sales@example.test"],
+            "name": "Alice Nováková",
         }
 
     async def test_quarantine_is_scoped(self, broker: BrokerSetup, mailcow: MockMailcow) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import time
@@ -27,6 +28,8 @@ from mailcow_mcp.imap import ImapConnector, ImapSession
 from mailcow_mcp.limits import DAY, HOUR
 from mailcow_mcp.oauth import MailboxAccessToken, Provider
 from mailcow_mcp.smtp import SmtpSender
+
+log = logging.getLogger(__name__)
 
 SIGNED_OUT = "This connection has been signed out. Reconnect the app to sign in again."
 
@@ -153,6 +156,20 @@ class Services:
                 return work(session)
 
         return await anyio.to_thread.run_sync(run)
+
+    async def display_name(self, mailbox: Mailbox) -> str:
+        """The mailbox's name in mailcow, for From when the client gives none ("" if unknown)."""
+        if self.broker is None or self.provider.capability_of(mailbox.grant_id) is None:
+            return ""  # generic mode, or a password sign-in
+        try:
+            profile = await self.broker_call(mailbox, "aliases")
+        except CapabilityRejected:
+            raise
+        except MailError as exc:
+            log.warning("mailbox name unavailable, sending without one: %s", exc)
+            return ""
+        name = profile.get("name")
+        return name if isinstance(name, str) else ""
 
     async def broker_call(self, mailbox: Mailbox, operation: str, **body: Any) -> dict[str, Any]:
         """A broker operation for this mailbox (mailcow sign-in connections only)."""

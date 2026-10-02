@@ -49,7 +49,6 @@ Generate keys and secrets with `docker run --rm ghcr.io/nitramxx/mailcow-mcp gen
 | Variable | Default | |
 |---|---|---|
 | `ALLOWED_DOMAINS` | empty (any) | Comma-separated domains allowed to sign in. |
-| `FROM_NAMES` | empty | Default display names in From when a client gives no `from_name`: `jan@example.com=Jan Novák; sales@example.com=Sales` (or one per line). `my_addresses` returns them. |
 | `TIMEZONE` | system (UTC in the container) | Time zone of the Date header, e.g. `Europe/Prague`. The mailcow kit copies mailcow's `TZ`. |
 | `SAVE_SENT` | `always` | `always`, `never`, or `auto` (skip for servers that file sent mail themselves, e.g. Gmail). |
 | `SEND_LIMIT_HOUR`, `SEND_LIMIT_DAY` | `30`, `300` | Messages per mailbox. |

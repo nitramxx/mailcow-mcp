@@ -8,7 +8,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from mailcow_mcp.compose import default_from_name, normalize_message_id
+from mailcow_mcp.compose import normalize_message_id
 from mailcow_mcp.config import Mode
 from mailcow_mcp.contacts import CardDav
 from mailcow_mcp.errors import ContactsAuthFailed, CredentialsRejected
@@ -52,9 +52,9 @@ class DeliveryStatus(BaseModel):
 class Addresses(BaseModel):
     mailbox: str
     aliases: list[str]
-    display_names: dict[str, str] = Field(
-        default_factory=dict,
-        description="The configured default display name per address (used when from_name is omitted).",
+    display_name: str | None = Field(
+        default=None,
+        description="The mailbox's name in mailcow: the display name in From when from_name is omitted.",
     )
     note: str = (
         "Use these as from_address. mailcow's sender rules decide what is accepted; "
@@ -158,12 +158,10 @@ def _register_mailcow(mcp: MCPServer[Any], services: Services) -> None:
         async with services.tool(ctx, "my_addresses") as mailbox:
             result = await services.broker_call(mailbox, "aliases")
             services.audit("my_addresses", mailbox=mailbox.username, client=mailbox.client_name)
-            addresses = [result["mailbox"], *result["aliases"]]
-            names = {
-                a: n for a in addresses if (n := default_from_name(services.config.from_names, a))
-            }
             return Addresses(
-                mailbox=result["mailbox"], aliases=result["aliases"], display_names=names
+                mailbox=result["mailbox"],
+                aliases=result["aliases"],
+                display_name=result.get("name") or None,
             )
 
 

@@ -114,32 +114,18 @@ class TestAppMailcowMode:
         assert c.carddav_internal is True
 
     def test_sending_settings(self) -> None:
-        c = load_app_config(
-            mailcow_env(
-                FROM_NAMES="URX@lexorate.com = Martin Urx; sales@lexorate.com=Lexorate Sales\n",
-                TIMEZONE="Europe/Prague",
-                SMTP_HELO_NAME="Email.Ozpr.cz",
-            )
-        )
-        assert c.from_names == {
-            "urx@lexorate.com": "Martin Urx",
-            "sales@lexorate.com": "Lexorate Sales",
-        }
+        c = load_app_config(mailcow_env(TIMEZONE="Europe/Prague", SMTP_HELO_NAME="Email.Ozpr.cz"))
         assert str(c.timezone) == "Europe/Prague"
         assert c.smtp_helo_name == "email.ozpr.cz"
         defaults = load_app_config(mailcow_env())
         assert defaults.smtp_helo_name == "mail.example.com"  # TLS_SERVER_NAME
-        assert defaults.timezone is None and defaults.from_names == {}
+        assert defaults.timezone is None
 
     @pytest.mark.parametrize(
         ("name", "value", "message"),
         [
-            ("FROM_NAMES", "no-equals-sign", "address=Name"),
-            ("FROM_NAMES", "a@example.com=", "invalid display name"),
-            ("FROM_NAMES", "a@example.com=Bad\x01Name", "invalid display name"),
             ("TIMEZONE", "Mars/Olympus", "time zone"),
             ("TIMEZONE", "Europe", "time zone"),
-            ("FROM_NAMES", "a@example.com=Bad\x7fName", "invalid display name"),
             ("SMTP_HELO_NAME", "not a host", "not a valid hostname"),
         ],
     )
@@ -148,17 +134,9 @@ class TestAppMailcowMode:
             load_app_config(mailcow_env(**{name: value}))
         assert message in "\n".join(exc.value.errors)
 
-    def test_from_names_edge_cases(self) -> None:
-        c = load_app_config(
-            mailcow_env(FROM_NAMES="a=b@example.com=Equals Name; info@příklad.cz=Info")
-        )
-        assert c.from_names == {
-            "a=b@example.com": "Equals Name",
-            "info@xn--pklad-zsa96e.cz": "Info",
-        }
-        with pytest.raises(ConfigError) as exc:
-            load_app_config(mailcow_env(FROM_NAMES="a@bad_domain=X"))
-        assert len(exc.value.errors) == 1  # reported once
+    def test_removed_from_names_only_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        load_app_config(mailcow_env(FROM_NAMES="a@example.com=A"))
+        assert "FROM_NAMES is no longer used" in caplog.text
 
     def test_helo_name_for_an_ip(self) -> None:
         c = load_app_config(generic_env(SMTP_HOST="192.168.1.20"))

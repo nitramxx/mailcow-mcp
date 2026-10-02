@@ -51,7 +51,10 @@ mailcow release.
 - Delete: `POST /api/v1/delete/qitem` `["<id>"]`.
 - `add header` / `rewrite subject` mail is delivered to Junk **and** kept in quarantine.
 
-## Aliases and logs
+## Mailboxes, aliases and logs
+
+- `GET /api/v1/get/mailbox/<mailbox>` → one object (`{}` if unknown) with `username`, `name` (the
+  full name set in mailcow, may be empty), `active`, quota and more.
 
 - `GET /api/v1/get/alias/all` → `address, goto` (comma-separated), `active`, … A mailbox's aliases
   are those whose `goto` contains it (mailcow's own regex: `(^|,)<mailbox>($|,)`).

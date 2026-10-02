@@ -181,6 +181,8 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     async def prepare(
         mailbox: Mailbox, outgoing: Outgoing, attachments: list[Attachment]
     ) -> Composed:
+        default_name = "" if outgoing.from_name else await services.display_name(mailbox)
+
         def work() -> Composed:
             with services.imap.connect(mailbox.username, mailbox.password) as session:
                 if outgoing.in_reply_to:
@@ -194,7 +196,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 outgoing,
                 username=mailbox.username,
                 max_message_bytes=services.max_message_bytes,
-                from_names=config.from_names,
+                default_name=default_name,
                 timezone=config.timezone,
             )
 
