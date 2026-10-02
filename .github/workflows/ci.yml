@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Test on uv's current CPython 3.12 like the image (python:3.12-slim), not the runner's older
+  # system 3.12.3, whose email package drops spaces when folding encoded headers.
+  UV_PYTHON_PREFERENCE: only-managed
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
