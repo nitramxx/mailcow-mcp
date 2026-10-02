@@ -62,6 +62,19 @@ The supported mailcow versions are listed in the README.
 
 ## Version notes
 
+### 0.2.0
+
+- **One connection, several mailboxes.** The database is migrated on start: each existing
+  connection keeps its mailbox (and its app password), nobody has to sign in again. Tools now have
+  a `mailbox` parameter, required only when a connection has more than one mailbox. Clients pick up
+  the new tools (`list_mailboxes`, `add_mailbox`, `remove_mailbox`) in their next session.
+- **`FROM_NAMES` is gone.** The display name in From is now the mailbox's name as set in mailcow
+  (mailbox settings, "Full name"). Remove `FROM_NAMES` from `app.env`; if it's still there, the app
+  logs a warning and ignores it.
+- **`SENDING=drafts_only`** (new, optional): the server offers no tools that send mail.
+- Back up the volumes before upgrading if you might want to go back: 0.1.x can't open the
+  migrated database.
+
 ### 0.1.2
 
 The kit is now a release download with an `update` command. If you installed from a git clone,

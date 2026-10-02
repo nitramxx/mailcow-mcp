@@ -25,15 +25,18 @@ quarantine, delivery status and contacts.
   client, click **Sign in with mailcow**, sign in on mailcow's own login page (2FA included).
   mailcow-mcp creates an app password named `MCP: <app> (…)` for IMAP, SMTP and contacts only;
   the user sees it in mailcow and can delete it any time.
-- **Each user acts only as their own mailbox.**
+- **Each connection acts only as the mailboxes signed into it**: one or several (a user can add
+  their other mailboxes to the same connector).
 - **The mailcow API key never sits in an internet-facing process.** A small internal broker holds
   it and can only create and delete app passwords for mailboxes that signed in, and read their
   quarantine and delivery log, proven by signed capability tokens.
 - **Any MCP client works**: Streamable HTTP with the standard MCP authorization (OAuth 2.1,
   dynamic client registration, PKCE).
 - **Generic mode** runs against any IMAP/SMTP server with a password sign-in.
+- **Drafts only, if you like:** with `SENDING=drafts_only` no tool sends mail; the assistant
+  writes drafts and people send them from their mail app.
 
-Tools: `send_email`, `save_draft`, `send_draft`, `delete_draft`, `list_folders`,
+Tools: `list_mailboxes`, `add_mailbox`, `remove_mailbox`, `send_email`, `save_draft`, `send_draft`, `delete_draft`, `list_folders`,
 `list_messages`, `search_messages`, `read_message`, `get_attachment`, `find_replies`,
 `get_thread`, `mark_messages`, `move_messages`, `list_spam`, `rescue_from_junk`,
 `release_from_quarantine`, `delete_from_quarantine`, `delivery_status`, `my_addresses`,

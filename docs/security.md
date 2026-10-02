@@ -11,6 +11,7 @@ design does about it, and what is stored. Report vulnerabilities as described in
 | The internet-facing app is compromised | It has no mailcow API key. It can act only for mailboxes that connected (it holds their app passwords and capability tokens), never for other mailboxes, and can't perform admin operations. |
 | Someone steals an MCP access token | Tokens last 1 hour and are bound to this server (RFC 8707); refresh tokens rotate, and reusing an old one revokes the connection. |
 | A malicious MCP client tricks a user into connecting | The consent page shows the client's name and where access goes; the user signs in on mailcow's own page. Each connection gets its own app password, visible in mailcow and revocable there. |
+| Someone sends a user an add_mailbox link, so the user's mailbox joins *their* connection | The link works once, for 15 minutes, and only in the browser that opened it; the page names the connection and the mailboxes already in it and asks to confirm. Each mailbox is signed in with its own credentials. |
 | Prompt injection through email | See below. |
 | Password guessing through the sign-in page | Limits per client IP and per mailbox. In mailcow mode passwords aren't entered here at all. |
 | The app container is used as an open relay | It always authenticates to SMTP, even though mailcow's Postfix trusts its network. |
@@ -68,7 +69,8 @@ App (`/data`, SQLite):
 
 | Data | Form |
 |---|---|
-| Mailbox addresses, registered clients (name, redirect URIs) | plain |
+| Mailbox addresses, registered clients (name, redirect URIs), which mailboxes each connection has | plain |
+| add_mailbox links | SHA-256 hashes only, 15 minutes |
 | App passwords (mailcow mode) or passwords (generic mode) | encrypted with `ENC_KEY` (Fernet) |
 | Capability tokens, confidential clients' secrets | encrypted with `ENC_KEY` |
 | Access tokens, refresh tokens, authorization codes, sign-in request ids | SHA-256 hashes only |

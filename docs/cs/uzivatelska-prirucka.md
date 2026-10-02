@@ -4,7 +4,7 @@ S mailcow MCP může AI asistent (Claude, Cursor, VS Code a další) pracovat s 
 schránkou: odesílat zprávy a koncepty i s přílohami, číst a hledat poštu, hlídat odpovědi
 (i ty, které skončily ve spamu nebo v karanténě), ověřit doručení a vyhledat kontakty.
 
-Asistent jedná vždy jen za vaši schránku. Nic neinstalujete a své heslo nezadáváte nikam jinam
+Asistent jedná vždy jen za schránky, které k němu připojíte. Nic neinstalujete a své heslo nezadáváte nikam jinam
 než na přihlašovací stránku svého mailcow.
 
 ## Připojení
@@ -30,6 +30,18 @@ Od správce dostanete adresu serveru, například `https://mcp.example.com/mcp`.
   `/mcp` → `mail` → Authenticate.
 - **Cursor, VS Code:** přidejte server s adresou výše (viz [clients.md](../clients.md)); aplikace
   vás vyzve k přihlášení.
+
+### Další schránky
+
+K jednomu konektoru můžete připojit víc schránek (až 10), třeba osobní a firemní:
+
+1. Napište asistentovi: „Připoj i moji schránku info@firma.cz.“
+2. Asistent vám dá odkaz. Otevřete ho, zkontrolujte, ke kterému připojení schránku přidáváte,
+   a přihlaste se jako ta druhá schránka.
+3. Hotovo: asistent vidí všechny připojené schránky a u každé akce uvádí, se kterou pracuje.
+
+Pokud je prohlížeč v mailcow přihlášen jako jiná schránka, mailcow použije tu. Otevřete proto
+odkaz v anonymním okně, nebo se nejdřív z mailcow odhlaste. Odkaz funguje jednou a 15 minut.
 
 ## Co můžete chtít
 
@@ -64,7 +76,8 @@ zprávy neoznačují jako přečtené.
 
 ## Odpojení
 
-- V aplikaci odeberte nebo odpojte konektor.
+- V aplikaci odeberte nebo odpojte konektor (odpojí všechny jeho schránky).
+- Jednu schránku: požádejte asistenta, ať ji odebere.
 - Nebo v mailcow v části **Hesla aplikací** smažte heslo s názvem `MCP: …` dané aplikace.
   Aplikace se tím okamžitě odpojí.
 - Spojení, které 30 dní nepoužijete, skončí samo.

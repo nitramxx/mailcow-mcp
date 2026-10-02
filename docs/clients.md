@@ -69,9 +69,17 @@ npx @modelcontextprotocol/inspector
 
 Transport **Streamable HTTP**, URL `https://mcp.example.com/mcp`, Connect.
 
+## Several mailboxes
+
+One connector can use several mailboxes. Ask the assistant to connect another one ("connect my
+info@ mailbox too"): it gives you a link; open it, sign in with that mailbox, done. If your browser
+is signed in to mailcow as another mailbox, open the link in a private window. The assistant then
+sees all of them (`list_mailboxes`) and names the mailbox in every call.
+
 ## Disconnecting
 
-- In the client: remove or disconnect the server (this revokes the connection).
+- In the client: remove or disconnect the server (this revokes the connection, all its mailboxes).
+- One mailbox: ask the assistant to remove it (`remove_mailbox`).
 - mailcow: delete the app password named `MCP: <app> (…)` under **App passwords**; the app is
   disconnected and asked to sign in again on its next request.
 - Administrators: `docker compose exec app mailcow-mcp revoke user@example.com`.

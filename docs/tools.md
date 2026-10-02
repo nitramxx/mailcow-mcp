@@ -1,6 +1,8 @@
 # Tools
 
-Every tool acts as the signed-in mailbox only. Reading never marks mail as read. Nothing deletes
+Every tool acts as one mailbox of the connection. With more than one connected, give its address
+as `mailbox` (every tool has that parameter; it's required then); every result names the mailbox
+it's about. Reading never marks mail as read. Nothing deletes
 mail permanently except `delete_draft` (drafts only) and `delete_from_quarantine`.
 
 Email content in tool results is wrapped and labelled as untrusted (see
@@ -11,6 +13,9 @@ saved with `save_draft`, and you send them from your mail app.
 
 | Tool | Mode | Changes something |
 |---|---|---|
+| [list_mailboxes](#list_mailboxes) | both | |
+| [add_mailbox](#add_mailbox) | both | connects a mailbox |
+| [remove_mailbox](#remove_mailbox) | both | disconnects a mailbox |
 | [send_email](#send_email) | both | sends |
 | [save_draft](#save_draft) | both | yes |
 | [send_draft](#send_draft) | both | sends |
@@ -31,6 +36,32 @@ saved with `save_draft`, and you send them from your mail app.
 | [delivery_status](#delivery_status) | mailcow | |
 | [my_addresses](#my_addresses) | mailcow | |
 | [find_contacts](#find_contacts) | mailcow; generic with `CARDDAV_URL` | |
+
+## Mailboxes
+
+One connection can use up to 10 mailboxes, each signed in on its own (in mailcow mode each gets
+its own `MCP: ` app password).
+
+### list_mailboxes
+
+The connected mailboxes: address, name and aliases (mailcow), and how each signed in.
+
+> "Which mailboxes can you use?"
+
+### add_mailbox
+
+Returns a one-time link (valid 15 minutes; a new link replaces the previous one). Open it, sign in
+with the other mailbox, and it joins the same connection: nothing to reconnect in the client. The
+page names the connection it adds to; continue only if you asked for the link. If your browser is
+signed in to mailcow as another mailbox, mailcow uses that one: open the link in a private window.
+
+> "Connect my info@ mailbox too."
+
+### remove_mailbox
+
+Disconnects one mailbox (its app password is deleted). The last one can't be removed this way:
+disconnect the app instead. A mailbox whose password or app password stops working is
+disconnected on its own; the others stay.
 
 ## Sending and drafts
 

@@ -7,6 +7,26 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+### Added
+
+- Several mailboxes in one connection: `list_mailboxes`, `add_mailbox` (a one-time link to sign
+  another mailbox in) and `remove_mailbox`. Every tool takes a `mailbox` parameter, required when
+  more than one mailbox is connected, and every result names its mailbox. A mailbox whose password
+  or app password stops working leaves the connection on its own.
+- `SENDING=drafts_only`: no tool sends mail; `send_email` and `send_draft` aren't offered, and the
+  consent page and server instructions say so.
+
+### Changed
+
+- The display name in From is the mailbox's name in mailcow when the client gives none;
+  `my_addresses` returns it as `display_name`.
+- The database is migrated to keep a connection's mailboxes in their own table (automatic; see
+  docs/upgrading.md). 0.1.x can't open the migrated database.
+
+### Removed
+
+- `FROM_NAMES` (a leftover setting is logged and ignored).
+
 ## [0.1.6] - 2026-10-02
 
 Fixes from a full code review. Update both containers (`sudo ./setup-mailcow.sh update`).
