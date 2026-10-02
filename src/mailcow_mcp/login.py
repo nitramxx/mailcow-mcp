@@ -42,7 +42,7 @@ from mailcow_mcp.oauth import (
     canonical_url,
     client_ip,
 )
-from mailcow_mcp.ratelimit import RateLimiter
+from mailcow_mcp.ratelimit import RateLimiter, client_key
 
 log = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ class LoginPages:
         ip = client_ip.get() or "unknown"
         if request.method == "POST":
             return await self._post(request, t, ip)
-        if not self.page_limit.hit(ip):
+        if not self.page_limit.hit(client_key(ip)):
             return self._message(t, "rate_limited_title", "error_rate_limited", 429)
         if not self.config.allow_password_login and self.mailcow is None:
             return self._message(t, "no_login_title", "no_login_body", 503)
@@ -275,7 +275,7 @@ class LoginPages:
         if not self.config.allow_password_login:
             return self._message(t, "no_login_title", "no_login_body", 503)
 
-        if not self.attempt_limit.hit(ip):
+        if not self.attempt_limit.hit(client_key(ip)):
             self.audit("login", result="rate_limited", ip=ip, client=pending.client_name)
             return self._login_page(
                 request, t, pending, status_code=429, error=t("error_rate_limited")
@@ -343,7 +343,7 @@ class LoginPages:
         self, request: Request, t: Translator, pending: PendingAuthorization, ip: str
     ) -> Response:
         assert self.mailcow is not None  # noqa: S101 - checked by the caller
-        if not self.attempt_limit.hit(ip):
+        if not self.attempt_limit.hit(client_key(ip)):
             return self._login_page(
                 request, t, pending, status_code=429, error=t("error_rate_limited")
             )
@@ -366,7 +366,7 @@ class LoginPages:
         assert self.mailcow is not None and self.broker is not None  # noqa: S101 - mailcow mode
         t = self._translator(request)
         ip = client_ip.get() or "unknown"
-        if not self.page_limit.hit(ip):
+        if not self.page_limit.hit(client_key(ip)):
             return self._message(t, "rate_limited_title", "error_rate_limited", 429)
         state = request.query_params.get("state", "")
         cookie = request.cookies.get(self.state_cookie, "")

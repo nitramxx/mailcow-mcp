@@ -37,7 +37,7 @@ from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
 from mailcow_mcp.login import LOGIN_PATH, LoginPages
 from mailcow_mcp.mailcow_login import MailcowOAuth
 from mailcow_mcp.oauth import Provider, client_ip
-from mailcow_mcp.ratelimit import RateLimiter
+from mailcow_mcp.ratelimit import RateLimiter, client_key
 from mailcow_mcp.services import Services
 from mailcow_mcp.tools import register_tools
 
@@ -49,6 +49,8 @@ DEPROVISION_INTERVAL_SECONDS = 60
 RECONCILE_INTERVAL_SECONDS = 3600
 RECONCILE_RETRY_SECONDS = 600
 REGISTRATIONS_PER_IP_HOUR = 20
+AUTHORIZATIONS_PER_IP_HOUR = 120
+OAUTH_LIMIT_WINDOW_SECONDS = 3600
 MAX_REGISTRATION_BYTES = 64 * 1024
 
 INSTRUCTIONS = (
@@ -76,37 +78,44 @@ class ClientIPMiddleware:
             client_ip.reset(token)
 
 
-class RegistrationLimitMiddleware:
-    """Limits dynamic client registrations per client IP."""
+class OAuthLimitMiddleware:
+    """Limits client registrations and sign-in requests (each stores a row) per client."""
 
-    def __init__(self, app: ASGIApp, limiter: RateLimiter) -> None:
+    def __init__(
+        self, app: ASGIApp, registrations: RateLimiter, authorizations: RateLimiter
+    ) -> None:
         self.app = app
-        self.limiter = limiter
+        self.registrations = registrations
+        self.authorizations = authorizations
+        self.registration_app = RequestBodyLimitMiddleware(app, MAX_REGISTRATION_BYTES)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == "/register":
-            length = dict(scope.get("headers", [])).get(b"content-length", b"0")
-            if not length.isdigit() or int(length) > MAX_REGISTRATION_BYTES:
-                response = JSONResponse(
-                    {"error": "invalid_client_metadata", "error_description": "body too large"},
-                    status_code=413,
-                )
-                await response(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        key = client_key(client_ip.get())
+        if scope["path"] == "/register" and scope["method"] == "POST":
+            if not self.registrations.hit(key):
+                await self._refuse("too many registrations", scope, receive, send)
                 return
-        if (
-            scope["type"] == "http"
-            and scope["method"] == "POST"
-            and scope["path"] == "/register"
-            and not self.limiter.hit(client_ip.get() or "unknown")
-        ):
-            response = JSONResponse(
-                {"error": "invalid_client_metadata", "error_description": "too many registrations"},
-                status_code=429,
-                headers={"Retry-After": "3600"},
-            )
-            await response(scope, receive, send)
+            await self.registration_app(scope, receive, send)  # also caps chunked bodies
+            return
+        if scope["path"] == "/authorize" and not self.authorizations.hit(key):
+            await self._refuse("too many sign-in requests", scope, receive, send)
             return
         await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _refuse(description: str, scope: Scope, receive: Receive, send: Send) -> None:
+        error = (
+            "invalid_client_metadata" if scope["path"] == "/register" else "temporarily_unavailable"
+        )
+        response = JSONResponse(
+            {"error": error, "error_description": description},
+            status_code=429,
+            headers={"Retry-After": str(OAUTH_LIMIT_WINDOW_SECONDS)},
+        )
+        await response(scope, receive, send)
 
 
 class McpCORSMiddleware:
@@ -418,8 +427,10 @@ def create_app(
             await mailcow_oauth.aclose()
 
     app: ASGIApp = Starlette(routes=routes, lifespan=lifespan)
-    app = RegistrationLimitMiddleware(
-        app, RateLimiter(REGISTRATIONS_PER_IP_HOUR, 3600, clock=clock)
+    app = OAuthLimitMiddleware(
+        app,
+        RateLimiter(REGISTRATIONS_PER_IP_HOUR, OAUTH_LIMIT_WINDOW_SECONDS, clock=clock),
+        RateLimiter(AUTHORIZATIONS_PER_IP_HOUR, OAUTH_LIMIT_WINDOW_SECONDS, clock=clock),
     )
     app = McpCORSMiddleware(app)
     app = SecurityHeadersMiddleware(app, hsts=config.public_url.startswith("https://"))

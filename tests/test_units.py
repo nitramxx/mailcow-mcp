@@ -18,7 +18,7 @@ from mailcow_mcp.imap import login_rejected
 from mailcow_mcp.login import normalize_email
 from mailcow_mcp.messages import summarize
 from mailcow_mcp.mime import parse_message
-from mailcow_mcp.ratelimit import RateLimiter
+from mailcow_mcp.ratelimit import RateLimiter, client_key
 from mailcow_mcp.smtp import auth_error
 from mailcow_mcp.tls import client_context
 
@@ -194,3 +194,23 @@ def test_summary_of_malformed_headers(broken: bytes) -> None:
     message = parse_message(broken + b"\r\nSubject: =?utf-8?q?ok?=\r\n\r\nbody")
     summary = summarize(1, "INBOX", message, ())
     assert summary.subject == "ok"
+
+
+@pytest.mark.parametrize(
+    ("ip", "key"),
+    [
+        ("203.0.113.9", "203.0.113.9"),
+        ("2001:db8:1:2::1", "2001:db8:1:2::/64"),
+        ("2001:db8:1:2:ffff::9", "2001:db8:1:2::/64"),
+        ("::ffff:203.0.113.9", "203.0.113.9"),
+        (None, "unknown"),
+    ],
+)
+def test_client_key(ip: str | None, key: str) -> None:
+    assert client_key(ip) == key
+
+
+def test_rate_limiter_checks_dont_store_keys() -> None:
+    limiter = RateLimiter(1, 60)
+    assert all(limiter.allowed(f"user{i}") for i in range(100))
+    assert limiter._events == {}

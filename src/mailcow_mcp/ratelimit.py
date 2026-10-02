@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from collections import deque
 from collections.abc import Callable
+
+
+def client_key(ip: str | None) -> str:
+    """The rate-limit key for a client address: an IPv6 client usually has a whole /64."""
+    if not ip:
+        return "unknown"
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.IPv6Network((address, 64), strict=False))
+    return str(address)
 
 
 class RateLimiter:
@@ -20,17 +36,14 @@ class RateLimiter:
         self._calls = 0
 
     def _recent(self, key: str, now: float) -> deque[float]:
-        events = self._events.get(key)
-        if events is None:
-            events = self._events[key] = deque()
+        events = self._events.get(key, deque())
         while events and events[0] <= now - self.window:
             events.popleft()
         return events
 
     def allowed(self, key: str) -> bool:
         """Whether one more event for ``key`` is within the limit (doesn't record it)."""
-        now = self._clock()
-        return len(self._recent(key, now)) < self.limit
+        return len(self._recent(key, self._clock())) < self.limit
 
     def hit(self, key: str) -> bool:
         """Record an event; False if it exceeds the limit (then it isn't recorded)."""
@@ -40,6 +53,7 @@ class RateLimiter:
         if len(events) >= self.limit:
             return False
         events.append(now)
+        self._events[key] = events
         return True
 
     def reset(self, key: str) -> None:

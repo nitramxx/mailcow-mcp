@@ -21,7 +21,7 @@ from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import SMTP as SMTPServer
 from aiosmtpd.smtp import Envelope, Session
 
-from mailcow_mcp.app import create_app
+from mailcow_mcp.app import AUTHORIZATIONS_PER_IP_HOUR, create_app
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.cli import app_server_options
 from mailcow_mcp.db import Database
@@ -225,6 +225,24 @@ class TestIsolation:
             json={"redirect_uris": ["https://x.example/cb"], "client_name": "x" * 70_000},
         )
         assert response.status_code == 413
+
+    def test_chunked_registration_body_limit(self, harness: Harness) -> None:
+        def chunks() -> Iterator[bytes]:
+            yield b'{"redirect_uris": ["https://x.example/cb"], "client_name": "'
+            for _ in range(20):
+                yield b"x" * 4096
+            yield b'"}'
+
+        response = harness.client.post(
+            "/register", content=chunks(), headers={"Content-Type": "application/json"}
+        )
+        assert response.status_code == 413
+
+    def test_authorize_is_rate_limited(self, harness: Harness) -> None:
+        for _ in range(AUTHORIZATIONS_PER_IP_HOUR):
+            harness.client.get("/authorize", params={"client_id": "x"})
+        response = harness.client.get("/authorize", params={"client_id": "x"})
+        assert response.status_code == 429
 
     def test_login_form_body_limit(self, harness: Harness) -> None:
         response = harness.client.post("/login", data={"request": "x", "password": "x" * 20_000})
