@@ -114,10 +114,10 @@ def fake_mailcow(tmp_path_factory: pytest.TempPathFactory, image: str) -> Iterat
         run("docker", "network", "rm", network, check=False)
 
 
-def setup(fake: FakeMailcow, *extra: str) -> str:
+def setup(fake: FakeMailcow, *extra: str, kit: Path | None = None) -> str:
     return run(
         "bash",
-        str(fake.kit / "setup-mailcow.sh"),
+        str((kit or fake.kit) / "setup-mailcow.sh"),
         "--mailcow-dir",
         str(fake.directory),
         "--hostname",
@@ -128,11 +128,15 @@ def setup(fake: FakeMailcow, *extra: str) -> str:
     ).stdout
 
 
-def test_setup_is_read_only_by_default(fake_mailcow: FakeMailcow) -> None:
-    out = setup(fake_mailcow)
+def test_setup_is_read_only_by_default(fake_mailcow: FakeMailcow, tmp_path: Path) -> None:
+    kit = tmp_path / "kit"  # a fresh one: other tests apply the shared kit
+    shutil.copytree(KIT, kit)
+    site = fake_mailcow.directory / "data/conf/nginx/mailcow-mcp.conf"
+    before = site.read_bytes() if site.exists() else None
+    out = setup(fake_mailcow, kit=kit)
     assert "Nothing was written" in out
-    assert not (fake_mailcow.kit / "app.env").exists()
-    assert not (fake_mailcow.directory / "data/conf/nginx/mailcow-mcp.conf").exists()
+    assert not (kit / "app.env").exists()
+    assert (site.read_bytes() if site.exists() else None) == before
     assert f"{fake_mailcow.subnet}.231" in out
     assert "https://mcp.test/oauth/mailcow/callback" in out
     assert "ADDITIONAL_SAN=mcp.test" in out
@@ -164,11 +168,13 @@ def test_apply_writes_config_and_keeps_keys(fake_mailcow: FakeMailcow) -> None:
     # A setting added later is appended on its own line, even without a final newline.
     stripped = "\n".join(line for line in app_env.splitlines() if not line.startswith("TIMEZONE="))
     (fake_mailcow.kit / "app.env").write_text(stripped)  # no trailing newline
-    setup(fake_mailcow, "--apply")
-    lines = (fake_mailcow.kit / "app.env").read_text().splitlines()
-    assert "TIMEZONE=UTC" in lines
-    assert lines[lines.index("TIMEZONE=UTC") - 1] == stripped.splitlines()[-1]
-    (fake_mailcow.kit / "app.env").write_text(app_env)
+    try:
+        setup(fake_mailcow, "--apply")
+        lines = (fake_mailcow.kit / "app.env").read_text().splitlines()
+        assert "TIMEZONE=UTC" in lines
+        assert lines[lines.index("TIMEZONE=UTC") - 1] == stripped.splitlines()[-1]
+    finally:
+        (fake_mailcow.kit / "app.env").write_text(app_env)  # later tests share this kit
 
 
 @pytest.fixture(scope="module")
@@ -478,7 +484,22 @@ def _release(root: Path, version: str, *, extra_line: str = "", bad_checksum: bo
     (target / "mailcow-kit.tar.gz.sha256").write_text(f"{digest}  mailcow-kit.tar.gz\n")
 
 
-def test_update_installs_a_release_kit(applied: FakeMailcow, tmp_path: Path) -> None:
+@pytest.fixture
+def restored_kit(applied: FakeMailcow) -> Iterator[FakeMailcow]:
+    """The shared kit, put back as it was after the test (update rewrites it)."""
+    saved = {p: p.read_bytes() for p in applied.kit.iterdir() if p.is_file()}
+    try:
+        yield applied
+    finally:
+        for path in applied.kit.iterdir():
+            if path.is_file() and path not in saved:
+                path.unlink()
+        for path, content in saved.items():
+            path.write_bytes(content)
+
+
+def test_update_installs_a_release_kit(restored_kit: FakeMailcow, tmp_path: Path) -> None:
+    applied = restored_kit
     _release(tmp_path, "9.9.9", extra_line="new in 9.9.9")
     _release(tmp_path, "6.6.6", bad_checksum=True)
     app_env = (applied.kit / "app.env").read_text()
