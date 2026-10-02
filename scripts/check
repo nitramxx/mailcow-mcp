@@ -1,5 +1,6 @@
 #!/bin/sh
-# Everything CI checks, stopping at the first failure. Extra arguments go to pytest.
+# The checks CI runs, stopping at the first failure. Extra arguments go to pytest.
+# Shellcheck runs when it's installed; the deployment kit tests only with MCP_KIT_TESTS=1.
 set -e
 # macOS drops DYLD_* when starting /bin/sh; WeasyPrint needs Homebrew's Pango.
 if [ "$(uname)" = Darwin ] && [ -d /opt/homebrew/lib ]; then
@@ -8,4 +9,7 @@ fi
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
+if command -v shellcheck >/dev/null; then
+    shellcheck -S info deploy/mailcow/setup-mailcow.sh scripts/check
+fi
 uv run pytest "$@"

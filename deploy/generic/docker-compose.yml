@@ -33,7 +33,9 @@ services:
       TRUSTED_PROXIES: 172.31.254.10
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=64m
+    pids_limit: 256
+    mem_limit: 1g
     cap_drop:
       - ALL
     security_opt:

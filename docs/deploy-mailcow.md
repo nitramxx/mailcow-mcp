@@ -5,8 +5,8 @@ server. Afterwards your users add one URL to Claude (or another MCP client), sig
 mailcow account, and nothing else.
 
 mailcow-mcp runs as its own compose project, for example in `/opt/mailcow-mcp`. **mailcow's own
-files are not changed** (apart from one nginx file you add in step 7), so mailcow's `update.sh`
-keeps working.
+compose files are not changed**: you add one nginx file (step 7) and a name to `ADDITIONAL_SAN` in
+`mailcow.conf` (step 2), so mailcow's `update.sh` keeps working.
 
 Supported mailcow versions: **2026-07 and later** (tested against the API of 2026-09).
 
@@ -134,9 +134,12 @@ cd /opt/mailcow-mcp
 sudo ./setup-mailcow.sh --hostname mcp.example.com --mailcow-dir /opt/mailcow-dockerized --apply --restart
 ```
 
-`--restart` pulls the images, starts both containers, restarts mailcow's nginx (only when its
+`--restart` pulls the images, starts both containers, reloads mailcow's nginx (only when its
 site file changed) and waits until they're healthy. Without it: `docker compose up -d` here, then
-`docker compose restart nginx-mailcow` in mailcow's directory.
+`docker compose exec nginx-mailcow nginx -s reload` in mailcow's directory.
+
+nginx's upload limit for the MCP server follows `MAX_MESSAGE_MB` in `app.env`; after changing it,
+run the setup again with `--apply --restart`.
 
 `--apply` writes three files **in `/opt/mailcow-mcp`, next to `docker-compose.yml`** (mode 600):
 
@@ -181,7 +184,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://mcp.example.com/mcp   # 401: si
    and webmail still load, `https://mcp.example.com/healthz` gives 502. Then `docker compose start`.
 4. **The broker is unreachable from outside:** from another machine,
    `curl -m 5 http://<server>:8091/` must fail (no port is published), and
-   `https://mcp.example.com/v1/provision` must give 404 (nginx doesn't route it).
+   `https://mcp.example.com/v1/provision` must give 404 (that path reaches the app, which has no
+   such route; the broker isn't reachable through nginx at all).
 
 Then connect your MCP client: see [clients.md](clients.md).
 
@@ -205,6 +209,7 @@ docker compose exec app mailcow-mcp users        # connected mailboxes
 docker compose exec app mailcow-mcp clients      # registered MCP clients
 docker compose exec app mailcow-mcp revoke user@example.com   # disconnect a mailbox
 docker compose logs -f app broker                # includes the audit log (JSON lines)
+docker compose exec app tail -n 50 /data/audit.log   # also CLI commands such as revoke
 ```
 
 ## Upgrading
@@ -230,7 +235,7 @@ network): `docker compose stop` here, then `update.sh`, then `docker compose sta
 cd /opt/mailcow-mcp
 docker compose exec app mailcow-mcp revoke --all   # deletes all "MCP: " app passwords
 docker compose down -v                             # -v also deletes the data volumes
-rm /opt/mailcow-dockerized/data/conf/nginx/mailcow-mcp.conf
+sudo rm -f /opt/mailcow-dockerized/data/conf/nginx/mailcow-mcp.conf{,.disabled}
 sudo rm -r /opt/mailcow-mcp
 cd /opt/mailcow-dockerized && docker compose restart nginx-mailcow
 ```

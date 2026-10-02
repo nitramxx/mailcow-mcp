@@ -465,9 +465,15 @@ def _release(root: Path, version: str, *, extra_line: str = "", bad_checksum: bo
     target = root / "download" / f"v{version}"
     target.mkdir(parents=True)
     archive = target / "mailcow-kit.tar.gz"
+
+    def as_root(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid = info.gid = 0
+        info.uname = info.gname = ""
+        return info
+
     with tarfile.open(archive, "w:gz") as tar:
         for path in sorted(staging.iterdir()):
-            tar.add(path, arcname=f"./{path.name}")
+            tar.add(path, arcname=path.name, filter=as_root)  # no "./" entries, like release.yml
     digest = "0" * 64 if bad_checksum else hashlib.sha256(archive.read_bytes()).hexdigest()
     (target / "mailcow-kit.tar.gz.sha256").write_text(f"{digest}  mailcow-kit.tar.gz\n")
 

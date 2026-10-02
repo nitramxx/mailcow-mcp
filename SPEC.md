@@ -6,7 +6,7 @@ An open-source, self-hosted **remote MCP server for mailcow**. Users connect the
 
 Published on GitHub as one multi-arch Docker image, with a mailcow deployment kit and clear guides.
 
-> Name: **mailcow-mcp** (repo `nitramx/mailcow-mcp`, image `ghcr.io/nitramx/mailcow-mcp`). License: **MIT**.
+> Name: **mailcow-mcp** (repo `nitramxx/mailcow-mcp`, image `ghcr.io/nitramxx/mailcow-mcp`). License: **MIT**.
 > README states it is a community project, not affiliated with or endorsed by the mailcow team / The Infrastructure Company GmbH. Distribution is via the Docker image; no PyPI package in v1 (`mcp-mailcow` on PyPI is an unrelated project).
 
 ## Goals
@@ -265,7 +265,7 @@ Guide steps (each with "verify" and troubleshooting):
 5. mailcow UI: Fail2ban whitelist += app IP, with the explanation (all logins come from it; without it, brute force on the login page bans the container and locks out everyone).
 6. `setup-mailcow.sh`, review, `--apply`, `docker compose up -d`.
 7. nginx site file in mailcow's custom nginx config directory (verify mechanism per supported mailcow version):
-   - upstream resolved at request time (`resolver 127.0.0.11 valid=10s; set $up http://app:8090; proxy_pass $up;`) **so mailcow's nginx still starts when the app is down**
+   - upstream resolved at request time (`resolver 127.0.0.11 valid=10s; set $up http://mailcow-mcp:8090; proxy_pass $up;`) **so mailcow's nginx still starts when the app is down**
    - mailcow certificate, `proxy_buffering off`, long read timeout, forwarded headers
    - routes only the app, never the broker
 8. Back up `ENC_KEY` and `BROKER_SIGNING_KEY` outside the server.

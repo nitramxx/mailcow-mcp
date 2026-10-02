@@ -14,7 +14,7 @@ Generate keys and secrets with `docker run --rm ghcr.io/nitramxx/mailcow-mcp gen
 | Variable | Default | |
 |---|---|---|
 | `MODE` | `mailcow` | `mailcow`: sign in with mailcow, app passwords created automatically. `generic`: password sign-in against any IMAP/SMTP server. |
-| `PUBLIC_URL` | required | e.g. `https://mcp.example.com`, no path. `http://` only for `localhost`. Clients connect to `<PUBLIC_URL>/mcp`. |
+| `PUBLIC_URL` | required | e.g. `https://mcp.example.com`, no path. `http://` only for local testing (`localhost`, `127.0.0.1`, `[::1]`). Clients connect to `<PUBLIC_URL>/mcp`. |
 | `ENC_KEY` | required | Encrypts stored credentials. Back it up. |
 | `TRUSTED_PROXIES` | required | IPs/CIDRs of the reverse proxy, comma-separated (mailcow: its network, e.g. `172.22.1.0/24`). Only these may set `X-Forwarded-For`. `*` is refused. |
 | `INSTANCE_NAME` | `mailcow MCP` | Shown on the sign-in page. |
@@ -53,7 +53,7 @@ Generate keys and secrets with `docker run --rm ghcr.io/nitramxx/mailcow-mcp gen
 | `TIMEZONE` | system (UTC in the container) | Time zone of the Date header, e.g. `Europe/Prague`. The mailcow kit copies mailcow's `TZ`. |
 | `SAVE_SENT` | `always` | `always`, `never`, or `auto` (skip for servers that file sent mail themselves, e.g. Gmail). |
 | `SEND_LIMIT_HOUR`, `SEND_LIMIT_DAY` | `30`, `300` | Messages per mailbox. |
-| `MAX_MESSAGE_MB` | `15` | Largest outgoing message, attachments included (1–100). |
+| `MAX_MESSAGE_MB` | `15` | Largest outgoing message, attachments included (1–100). The mailcow kit sizes nginx's upload limit from it when the setup runs. |
 
 ### Runtime
 
@@ -81,12 +81,15 @@ Generate keys and secrets with `docker run --rm ghcr.io/nitramxx/mailcow-mcp gen
 Not configurable: access tokens 1 hour; refresh tokens 30 days since last use; sign-in requests
 15 minutes; unused client registrations 24 hours; 20 registrations per IP per hour; 10 sign-in
 attempts per IP per 10 minutes; 10 failed sign-ins per mailbox per 15 minutes; 10 new mailcow
-connections per mailbox per hour; 50 recipients, 10 attachments and a 1,000,000-character body per
-message.
+connections per mailbox per hour; 120 sign-in requests per IP per hour (IPv6: per /64); 50
+recipients, 10 attachments and a 1,000,000-character body per message; 200,000 characters of
+Markdown per rendered PDF (500,000 for all PDFs of a message).
 
 ## CLI
 
-Run inside the app container (`docker compose exec app mailcow-mcp <command>`):
+Run inside the app container (`docker compose exec app mailcow-mcp <command>`), except
+`check-mailcow`, which runs in the broker (`docker compose exec broker mailcow-mcp check-mailcow`).
+Audit lines of a command go to stderr and to `/data/audit.log`:
 
 | Command | |
 |---|---|
@@ -97,3 +100,4 @@ Run inside the app container (`docker compose exec app mailcow-mcp <command>`):
 | `revoke <mailbox>` | Disconnect a mailbox (and delete its `MCP: ` app passwords). |
 | `revoke --all` | Disconnect everyone (before uninstalling). |
 | `healthcheck` | Exit 0 if the local server answers (used by the container health check). |
+| `check-mailcow` | Broker only: test the API key and "Allow API access from" against mailcow. |

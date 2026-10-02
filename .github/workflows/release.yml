@@ -45,16 +45,31 @@ jobs:
       - name: Package the deployment kits
         run: |
           version=${GITHUB_REF_NAME#v}
+          # Reproducible: fixed order, times, owners and modes; gzip without a timestamp.
+          epoch=$(git log -1 --format=%ct)
           for kit in mailcow generic; do
             dir=$(mktemp -d)
             cp -a "deploy/$kit/." "$dir/"
             echo "$version" > "$dir/VERSION"
             # Files only, no "./" entry: extracting must not change the directory's owner.
             (cd "$dir" && find . -mindepth 1 -maxdepth 1 -printf '%P\n' | sort > ../files.txt)
-            tar -C "$dir" --owner=0 --group=0 -czf "$kit-kit.tar.gz" -T "$dir/../files.txt"
+            tar -C "$dir" --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
+              --mode=go-w -cf - -T "$dir/../files.txt" | gzip -9n > "$kit-kit.tar.gz"
             sha256sum "$kit-kit.tar.gz" > "$kit-kit.tar.gz.sha256"
           done
           tar -tzvf mailcow-kit.tar.gz
+
+      # A draft first: if anything below fails, no published release lacks its image.
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          body_path: release-notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            mailcow-kit.tar.gz
+            mailcow-kit.tar.gz.sha256
+            generic-kit.tar.gz
+            generic-kit.tar.gz.sha256
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -84,12 +99,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          body_path: release-notes.md
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          files: |
-            mailcow-kit.tar.gz
-            mailcow-kit.tar.gz.sha256
-            generic-kit.tar.gz
-            generic-kit.tar.gz.sha256
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"

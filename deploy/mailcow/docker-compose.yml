@@ -11,7 +11,8 @@ x-hardening: &hardening
   restart: unless-stopped
   read_only: true
   tmpfs:
-    - /tmp
+    - /tmp:size=64m
+  pids_limit: 256
   cap_drop:
     - ALL
   security_opt:
@@ -33,6 +34,7 @@ services:
     <<: *hardening
     command: ["serve"]
     env_file: app.env
+    mem_limit: 1g  # parsing and rendering mail; one runaway request can't take mailcow down
     volumes:
       - app-data:/data
     healthcheck:
@@ -44,7 +46,7 @@ services:
     networks:
       mailcow:
         # Fixed: mailcow's Fail2ban whitelist names this address.
-        ipv4_address: ${APP_IP}
+        ipv4_address: ${APP_IP:?run setup-mailcow.sh --apply first (it writes .env)}
         aliases:
           - mailcow-mcp
       internal: {}
@@ -53,6 +55,7 @@ services:
     <<: *hardening
     command: ["broker"]
     env_file: broker.env
+    mem_limit: 256m
     environment:
       # Listen only on the internal network: nothing on mailcow's network can reach it.
       HOST: ${BROKER_INTERNAL_IP:-172.31.253.11}
@@ -67,7 +70,7 @@ services:
     networks:
       mailcow:
         # Fixed: mailcow's "Allow API access from" names this address.
-        ipv4_address: ${BROKER_IP}
+        ipv4_address: ${BROKER_IP:?run setup-mailcow.sh --apply first (it writes .env)}
       internal:
         ipv4_address: ${BROKER_INTERNAL_IP:-172.31.253.11}
         # Only on this network (the service name "broker" resolves on both).

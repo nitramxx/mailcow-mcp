@@ -23,7 +23,7 @@ KIT_FILES="docker-compose.yml mailcow-mcp.conf.template setup-mailcow.sh VERSION
 die() { echo "error: $*" >&2; exit 1; }
 note() { printf '  %s\n' "$*"; }
 usage() {
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 env_value() {  # env_value file KEY
@@ -32,6 +32,17 @@ env_value() {  # env_value file KEY
     fi
 }
 sha256() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
+
+# Run with sudo, files here still belong to whoever owns this directory (e.g. you, not root).
+KIT_OWNER=""
+if [ "$(id -u)" = 0 ]; then
+    KIT_OWNER="$(stat -c '%u:%g' "$KIT_DIR" 2>/dev/null || stat -f '%u:%g' "$KIT_DIR")"
+fi
+own() {
+    if [ -n "$KIT_OWNER" ]; then
+        chown "$KIT_OWNER" "$@"
+    fi
+}
 
 # --- update: install another release's kit, then run the setup with it ------------------
 if [ "${1:-}" = "update" ]; then
@@ -70,16 +81,21 @@ if [ "${1:-}" = "update" ]; then
             diff -u "$KIT_DIR/$f" "$work/kit/$f" | tail -n +3 | sed 's/^/    /' || true
         fi
     done
+    # Copy everything next to its target first, then rename: no half-updated kit.
     for f in $KIT_FILES; do
         cp "$work/kit/$f" "$KIT_DIR/$f.new"
+        own "$KIT_DIR/$f.new"
+    done
+    chmod +x "$KIT_DIR/setup-mailcow.sh.new"
+    for f in $KIT_FILES; do
         mv "$KIT_DIR/$f.new" "$KIT_DIR/$f"
     done
-    chmod +x "$KIT_DIR/setup-mailcow.sh"
     # Pin the image to the kit's version.
     if [ -f "$KIT_DIR/.env" ]; then
         sed -i.bak -E "s/^MCP_VERSION=.*/MCP_VERSION=$new/" "$KIT_DIR/.env" && rm -f "$KIT_DIR/.env.bak"
     fi
     echo
+    rm -rf "$work"; trap - EXIT  # exec skips the trap
     # shellcheck disable=SC2086 # $restart is one flag or nothing
     exec "$KIT_DIR/setup-mailcow.sh" --apply $restart
 fi
@@ -93,15 +109,20 @@ API_KEY=""
 MCP_VERSION="$(cat "$KIT_DIR/VERSION" 2>/dev/null || echo latest)"
 APPLY=0
 RESTART=0
+VERSION_GIVEN=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --hostname) MCP_HOSTNAME="${2:-}"; shift 2 ;;
-        --mailcow-dir) MAILCOW_DIR="${2:-}"; shift 2 ;;
-        --oauth-client-id) OAUTH_CLIENT_ID="${2:-}"; shift 2 ;;
-        --oauth-client-secret) OAUTH_CLIENT_SECRET="${2:-}"; shift 2 ;;
-        --api-key) API_KEY="${2:-}"; shift 2 ;;
-        --version) MCP_VERSION="${2:-}"; shift 2 ;;
+        --hostname|--mailcow-dir|--oauth-client-id|--oauth-client-secret|--api-key|--version)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then die "$1 needs a value"; fi ;;
+    esac
+    case "$1" in
+        --hostname) MCP_HOSTNAME="$2"; shift 2 ;;
+        --mailcow-dir) MAILCOW_DIR="$2"; shift 2 ;;
+        --oauth-client-id) OAUTH_CLIENT_ID="$2"; shift 2 ;;
+        --oauth-client-secret) OAUTH_CLIENT_SECRET="$2"; shift 2 ;;
+        --api-key) API_KEY="$2"; shift 2 ;;
+        --version) MCP_VERSION="${2#v}"; VERSION_GIVEN=1; shift 2 ;;
         --apply) APPLY=1; shift ;;
         --restart) RESTART=1; shift ;;
         -h|--help) usage 0 ;;
@@ -111,9 +132,11 @@ done
 [ "$RESTART" = 0 ] || [ "$APPLY" = 1 ] || die "--restart needs --apply"
 
 # Remembered from the first run.
-if [ -z "$MCP_HOSTNAME" ]; then
-    public_url="$(env_value "$KIT_DIR/app.env" PUBLIC_URL)"
-    MCP_HOSTNAME="${public_url#https://}"
+public_url="$(env_value "$KIT_DIR/app.env" PUBLIC_URL)"
+MCP_HOSTNAME="$(printf '%s' "${MCP_HOSTNAME:-${public_url#https://}}" | tr '[:upper:]' '[:lower:]')"
+if [ -n "$public_url" ] && [ "$public_url" != "https://$MCP_HOSTNAME" ]; then
+    die "app.env has PUBLIC_URL=$public_url, not https://$MCP_HOSTNAME. To change the name, edit
+       PUBLIC_URL in app.env and the OAuth2 app's redirect URI in mailcow, then run this again."
 fi
 [ -n "$MAILCOW_DIR" ] || MAILCOW_DIR="$(env_value "$KIT_DIR/.env" MAILCOW_DIR)"
 [ -n "$MAILCOW_DIR" ] || MAILCOW_DIR="/opt/mailcow-dockerized"
@@ -122,13 +145,14 @@ fi
 [[ "$MCP_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] \
     || die "--hostname '$MCP_HOSTNAME' is not a valid hostname"
 [ -f "$MAILCOW_DIR/mailcow.conf" ] || die "no mailcow.conf in $MAILCOW_DIR (use --mailcow-dir)"
+[ -r "$MAILCOW_DIR/mailcow.conf" ] || die "can't read $MAILCOW_DIR/mailcow.conf: run this with sudo"
 command -v docker >/dev/null || die "docker is not installed"
 
 # --- read mailcow.conf (without sourcing it) ---------------------------------
 conf() {
     local value
-    value="$(grep -E "^$1=" "$MAILCOW_DIR/mailcow.conf" | tail -n 1 | cut -d= -f2- || true)"
-    value="${value%\"}"; value="${value#\"}"
+    value="$(grep -E "^$1=" "$MAILCOW_DIR/mailcow.conf" | tail -n 1 | cut -d= -f2- | tr -d '\r' || true)"
+    value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
     printf '%s' "${value:-${2:-}}"
 }
 
@@ -137,6 +161,8 @@ MAILCOW_HOSTNAME="$(conf MAILCOW_HOSTNAME)"
 PROJECT="$(conf COMPOSE_PROJECT_NAME mailcowdockerized)"
 IPV4_NETWORK="$(conf IPV4_NETWORK 172.22.1)"
 HTTPS_PORT="$(conf HTTPS_PORT 443)"
+[[ "$HTTPS_PORT" =~ ^[0-9]+$ ]] || die "HTTPS_PORT in mailcow.conf is not a port number: $HTTPS_PORT"
+HTTPS_BIND="$(conf HTTPS_BIND)"
 ENABLE_IPV6="$(conf ENABLE_IPV6 true)"
 ADDITIONAL_SAN="$(conf ADDITIONAL_SAN)"
 MAILCOW_TZ="$(conf TZ UTC)"
@@ -163,6 +189,11 @@ existing() {
     fi
 }
 used_ips="$(docker network inspect "$NETWORK" -f '{{range .Containers}}{{.IPv4Address}} {{end}}' | tr ' ' '\n' | cut -d/ -f1)"
+# Stopped containers keep their fixed addresses too (they aren't listed on the network).
+for id in $(docker ps -aq --filter "network=$NETWORK"); do
+    used_ips="$used_ips
+$(docker inspect -f '{{range .NetworkSettings.Networks}}{{if .IPAMConfig}}{{.IPAMConfig.IPv4Address}} {{end}}{{end}}' "$id" | tr ' ' '\n')"
+done
 pick_ip() {
     local skip="$1" n candidate
     for n in $(seq 231 247); do  # mailcow's fixed addresses are .248 and up
@@ -175,6 +206,16 @@ pick_ip() {
 }
 APP_IP="$(existing APP_IP)"; APP_IP="${APP_IP:-$(pick_ip "")}"
 BROKER_IP="$(existing BROKER_IP)"; BROKER_IP="${BROKER_IP:-$(pick_ip "$APP_IP")}"
+
+# The kit's internal network (docker-compose.yml) must not collide with another network.
+INTERNAL_SUBNET="$(existing INTERNAL_SUBNET)"; INTERNAL_SUBNET="${INTERNAL_SUBNET:-172.31.253.0/24}"
+for net in $(docker network ls -q); do
+    read -r net_name net_subnets <<<"$(docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}' "$net")"
+    if [ "$net_name" != "mailcow-mcp_internal" ] && grep -qwF "$INTERNAL_SUBNET" <<<"$net_subnets"; then
+        echo "warning: docker network $net_name already uses $INTERNAL_SUBNET; set INTERNAL_SUBNET and" \
+            "BROKER_INTERNAL_IP (an address in it) in .env" >&2
+    fi
+done
 
 echo "mailcow-mcp"
 note "MCP URL:        https://$MCP_HOSTNAME/mcp"
@@ -191,7 +232,8 @@ in_mailcow() {  # docker compose exec in mailcow's project; fails quietly
 sql() {
     local client
     for client in mariadb mysql; do  # newer MariaDB images only have "mariadb"
-        if in_mailcow -e MYSQL_PWD="$DBPASS" mysql-mailcow "$client" -u"$DBUSER" "$DBNAME" -N -B -e "$1"; then
+        # -e NAME takes the value from our environment: the password isn't in ps output.
+        if MYSQL_PWD="$DBPASS" in_mailcow -e MYSQL_PWD mysql-mailcow "$client" -u"$DBUSER" "$DBNAME" -N -B -e "$1"; then
             return 0
         fi
     done
@@ -199,7 +241,7 @@ sql() {
 }
 redis() {
     if [ -n "$REDISPASS" ]; then
-        in_mailcow -e REDISCLI_AUTH="$REDISPASS" redis-mailcow redis-cli "$@"
+        REDISCLI_AUTH="$REDISPASS" in_mailcow -e REDISCLI_AUTH redis-mailcow redis-cli "$@"
     else
         in_mailcow redis-mailcow redis-cli "$@"
     fi
@@ -218,7 +260,13 @@ ip_in() {  # ip_in IP "list of IPs/CIDRs (any separators)": is IP covered?
         }
         END { exit !found }'
 }
-resolve() { getent ahosts "$1" 2>/dev/null | awk '{print $1}' | sort -u || true; }
+resolve() {  # public addresses of a name: DNS, not /etc/hosts (which may map it to 127.0.1.1)
+    if command -v dig >/dev/null; then
+        { dig +short A "$1"; dig +short AAAA "$1"; } 2>/dev/null | grep -E '^[0-9a-fA-F:.]+$' | sort -u || true
+    else
+        getent ahosts "$1" 2>/dev/null | awk '{print $1}' | grep -vE '^(127\.|::1$)' | sort -u || true
+    fi
+}
 
 STATUS=(); DETAIL=()
 check() { STATUS[$1]="$2"; DETAIL[$1]="$3"; }  # step ok|todo|unknown text
@@ -238,7 +286,8 @@ fi
 CERT="$MAILCOW_DIR/data/assets/ssl/cert.pem"
 in_san=0; [[ ",${ADDITIONAL_SAN// /}," == *",$MCP_HOSTNAME,"* ]] && in_san=1
 if [ -r "$CERT" ] && command -v openssl >/dev/null; then
-    if openssl x509 -in "$CERT" -noout -text 2>/dev/null | grep -q "DNS:$MCP_HOSTNAME\b"; then
+    if openssl x509 -in "$CERT" -noout -ext subjectAltName 2>/dev/null | grep -oE 'DNS:[^, ]+' \
+        | cut -d: -f2 | tr '[:upper:]' '[:lower:]' | grep -qxF "$MCP_HOSTNAME"; then
         check 2 ok "mailcow's certificate covers $MCP_HOSTNAME (expires $(openssl x509 -in "$CERT" -noout -enddate | cut -d= -f2))"
     elif [ "$in_san" = 1 ]; then
         check 2 todo "in ADDITIONAL_SAN, but the certificate doesn't include it yet"
@@ -303,17 +352,6 @@ new_key() {
 port_suffix=""
 [ "$HTTPS_PORT" = "443" ] || port_suffix=":$HTTPS_PORT"
 
-# Run with sudo, files here still belong to whoever owns this directory (e.g. you, not root).
-KIT_OWNER=""
-if [ "$(id -u)" = 0 ]; then
-    KIT_OWNER="$(stat -c '%u:%g' "$KIT_DIR" 2>/dev/null || stat -f '%u:%g' "$KIT_DIR")"
-fi
-own() {
-    if [ -n "$KIT_OWNER" ]; then
-        chown "$KIT_OWNER" "$1"
-    fi
-}
-
 write_file() {  # path mode content
     local path="$1" mode="$2" content="$3"
     if [ -e "$path" ]; then
@@ -361,8 +399,18 @@ add_missing() {  # add_missing file KEY value: append KEY if an existing file la
 }
 
 echo "files"
-SHARED_SECRET="$(new_key)"
-[ -f "$KIT_DIR/app.env" ] && SHARED_SECRET="$(grep -E '^BROKER_SHARED_SECRET=' "$KIT_DIR/app.env" | cut -d= -f2-)"
+# One shared secret in both files: keep whichever exists, and never two different ones.
+app_secret="$(env_value "$KIT_DIR/app.env" BROKER_SHARED_SECRET)"
+broker_secret="$(env_value "$KIT_DIR/broker.env" BROKER_SHARED_SECRET)"
+if [ -n "$app_secret" ] && [ -n "$broker_secret" ] && [ "$app_secret" != "$broker_secret" ]; then
+    die "BROKER_SHARED_SECRET differs between app.env and broker.env: make them the same"
+fi
+SHARED_SECRET="${app_secret:-${broker_secret:-$(new_key)}}"
+for f in app.env broker.env; do
+    if [ -f "$KIT_DIR/$f" ] && [ -z "$(env_value "$KIT_DIR/$f" BROKER_SHARED_SECRET)" ]; then
+        die "$f has no BROKER_SHARED_SECRET: add BROKER_SHARED_SECRET=$SHARED_SECRET to it"
+    fi
+done
 
 write_file "$KIT_DIR/.env" 600 "# compose settings (setup-mailcow.sh)
 MCP_VERSION=$MCP_VERSION
@@ -371,6 +419,14 @@ MAILCOW_NETWORK=$NETWORK
 APP_IP=$APP_IP
 BROKER_IP=$BROKER_IP"
 add_missing "$KIT_DIR/.env" MAILCOW_DIR "$MAILCOW_DIR"
+if [ "$VERSION_GIVEN" = 1 ] && [ -f "$KIT_DIR/.env" ] && [ "$(env_value "$KIT_DIR/.env" MCP_VERSION)" != "$MCP_VERSION" ]; then
+    if [ "$APPLY" = 1 ]; then
+        sed -i.bak -E "s/^MCP_VERSION=.*/MCP_VERSION=$MCP_VERSION/" "$KIT_DIR/.env" && rm -f "$KIT_DIR/.env.bak"
+        note "set            MCP_VERSION=$MCP_VERSION ($KIT_DIR/.env)"
+    else
+        note "would set      MCP_VERSION=$MCP_VERSION ($KIT_DIR/.env)"
+    fi
+fi
 
 write_file "$KIT_DIR/app.env" 600 "# mailcow-mcp app (setup-mailcow.sh). See docs/configuration.md.
 MODE=mailcow
@@ -401,9 +457,16 @@ fill_empty "$KIT_DIR/broker.env" MAILCOW_API_KEY "$API_KEY"
 
 listen_ipv6=""
 [ "$ENABLE_IPV6" = "false" ] || listen_ipv6="    listen [::]:${HTTPS_PORT} ssl;"
+# The app accepts tool calls of MAX_MESSAGE_MB plus base64 overhead: so must nginx.
+max_message_mb="$(env_value "$KIT_DIR/app.env" MAX_MESSAGE_MB)"
+[[ "$max_message_mb" =~ ^[0-9]+$ ]] || max_message_mb=15
+max_body_mb=$(( max_message_mb * 3 / 2 + 4 ))
+[ "$max_body_mb" -ge 40 ] || max_body_mb=40
 site="$(sed -e "s|\${HTTPS_PORT}|$HTTPS_PORT|g" -e "s|\${MCP_HOSTNAME}|$MCP_HOSTNAME|g" \
+    -e "s|\${MAX_BODY_MB}|$max_body_mb|g" \
     -e "s|^\${LISTEN_IPV6}$|$listen_ipv6|" "$KIT_DIR/mailcow-mcp.conf.template")"
 SITE_FILE="$MAILCOW_DIR/data/conf/nginx/mailcow-mcp.conf"
+FAILED=0
 site_changed=1
 if [ -f "$SITE_FILE" ] && [ "$(cat "$SITE_FILE")" = "$site" ]; then
     site_changed=0
@@ -412,12 +475,13 @@ if [ "$APPLY" = 1 ]; then
     printf '%s\n' "$site" >"$SITE_FILE"
     note "wrote          $SITE_FILE"
     # mailcow's nginx sees the file at once (mounted directory): make sure it's valid.
-    if nginx_test="$(in_mailcow nginx-mailcow nginx -t 2>&1)" || [ -z "$(cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" ps -q nginx-mailcow 2>/dev/null)" ]; then
-        :
-    else
+    rm -f "$SITE_FILE.disabled"
+    if [ -n "$(cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" ps -q nginx-mailcow 2>/dev/null)" ] \
+        && ! nginx_test="$(cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" exec -T nginx-mailcow nginx -t 2>&1)"; then
         mv "$SITE_FILE" "$SITE_FILE.disabled"
         echo "error: nginx rejects the site file; moved it to $SITE_FILE.disabled:" >&2
         echo "$nginx_test" >&2
+        FAILED=1
     fi
 else
     note "would write    $SITE_FILE"
@@ -425,8 +489,11 @@ fi
 
 # 7. Credentials in the env files
 missing_env=""
-oauth_id_set=0; grep -qE '^MAILCOW_OAUTH_CLIENT_ID=.+' "$KIT_DIR/app.env" 2>/dev/null && oauth_id_set=1
-[ -n "$OAUTH_CLIENT_ID" ] && oauth_id_set=1
+oauth_id_set=0
+if { grep -qE '^MAILCOW_OAUTH_CLIENT_ID=.+' "$KIT_DIR/app.env" 2>/dev/null || [ -n "$OAUTH_CLIENT_ID" ]; } \
+    && { grep -qE '^MAILCOW_OAUTH_CLIENT_SECRET=.+' "$KIT_DIR/app.env" 2>/dev/null || [ -n "$OAUTH_CLIENT_SECRET" ]; }; then
+    oauth_id_set=1
+fi
 api_key_set=0; grep -qE '^MAILCOW_API_KEY=.+' "$KIT_DIR/broker.env" 2>/dev/null && api_key_set=1
 [ -n "$API_KEY" ] && api_key_set=1
 [ "$oauth_id_set" = 1 ] || missing_env="$missing_env MAILCOW_OAUTH_CLIENT_ID/_SECRET (app.env)"
@@ -443,8 +510,11 @@ if [ "$RESTART" = 1 ]; then
     (cd "$KIT_DIR" && docker compose pull -q && docker compose up -d --remove-orphans) \
         || die "docker compose failed in $KIT_DIR"
     if [ "$site_changed" = 1 ] && [ -f "$SITE_FILE" ]; then
-        (cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" restart nginx-mailcow) >/dev/null 2>&1 \
-            && note "restarted nginx-mailcow (its site file changed)"
+        if (cd "$MAILCOW_DIR" && docker compose -p "$PROJECT" exec -T nginx-mailcow nginx -s reload) >/dev/null 2>&1; then
+            note "reloaded nginx-mailcow (its site file changed)"
+        else
+            echo "warning: couldn't reload nginx-mailcow; in $MAILCOW_DIR run: docker compose restart nginx-mailcow" >&2
+        fi
     fi
     for _ in $(seq 45); do
         states="$(docker compose --project-directory "$KIT_DIR" ps --format '{{.Service}}={{.Health}}' 2>/dev/null)" || states=""
@@ -461,7 +531,10 @@ if [ -f "$KIT_DIR/.env" ]; then
     running="$(docker compose --project-directory "$KIT_DIR" ps --format '{{.Service}}={{.Health}}' 2>/dev/null)" || running=""
 fi
 if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$running"; then
-    health="$(curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:127.0.0.1" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" 2>/dev/null)" || health=""
+    probe_ip="127.0.0.1"
+    case "$HTTPS_BIND" in ""|0.0.0.0|"*"|::|"[::]") ;; *) probe_ip="${HTTPS_BIND#[}"; probe_ip="${probe_ip%]}" ;; esac
+    [[ "$probe_ip" == *:* ]] && probe_ip="[$probe_ip]"
+    health="$(curl -fsS -m 10 --resolve "$MCP_HOSTNAME:$HTTPS_PORT:$probe_ip" "https://$MCP_HOSTNAME:$HTTPS_PORT/healthz" 2>&1)" || { curl_error="$health"; health=""; }
     api_check="$(docker compose --project-directory "$KIT_DIR" exec -T broker mailcow-mcp check-mailcow 2>&1)" || true
     if [ -n "$health" ] && ! grep -q '"broker":"ok"' <<<"$health"; then
         check 9 todo "the app can't reach the broker (BROKER_URL in app.env must be http://mcp-broker:8091, as in docker-compose.yml)"
@@ -470,7 +543,7 @@ if grep -q "^app=healthy" <<<"$running" && grep -q "^broker=healthy" <<<"$runnin
     elif [ -n "$health" ]; then
         check 9 ok "app and broker healthy; https://$MCP_HOSTNAME/healthz answers through mailcow's nginx"
     else
-        check 9 todo "app and broker healthy, but mailcow's nginx doesn't route $MCP_HOSTNAME yet"
+        check 9 todo "app and broker healthy, but https://$MCP_HOSTNAME/healthz fails through mailcow's nginx: ${curl_error:-no answer}"
     fi
 elif [ -n "$running" ]; then
     check 9 todo "containers: $(echo "$running" | tr '\n' ' ')"
@@ -536,7 +609,7 @@ if todo 9; then
     fi
     cat <<EOF
  7. Start:  cd $KIT_DIR && docker compose up -d
-    Then:   cd $MAILCOW_DIR && docker compose restart nginx-mailcow
+    Then:   cd $MAILCOW_DIR && docker compose exec nginx-mailcow nginx -s reload
 EOF
 fi
 cat <<EOF
@@ -546,3 +619,4 @@ if [ "$APPLY" = 0 ]; then
     echo
     echo "Nothing was written. Review the above, then run again with --apply."
 fi
+exit "$FAILED"

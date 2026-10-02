@@ -29,7 +29,7 @@ The broker exposes a fixed list of operations; there is no generic API passthrou
 |---|---|
 | `provision` | asks mailcow (`/oauth/profile`) whose OAuth token this is, never trusting a username from the app; creates an app password for that mailbox (IMAP, SMTP, DAV only); returns it with a capability token |
 | `deprovision` | deletes that app password (only names starting `MCP: `) |
-| `reconcile` | the app lists the capabilities it still holds; other `MCP: ` app passwords are deleted |
+| `reconcile` | the app lists the capabilities it still holds; other `MCP: ` app passwords are deleted (refused, deleting nothing, when most capabilities don't verify, e.g. after a `BROKER_SIGNING_KEY` change) |
 | `aliases` | the mailbox's own aliases |
 | `quarantine_list` / `_release` / `_delete` | quarantine items addressed to the mailbox or its aliases; ownership is re-checked on release and delete |
 | `delivery_status` | Postfix log lines for a Message-ID, only if sent from the mailbox or its aliases |
@@ -77,7 +77,8 @@ Broker (`/data`): app password ids, mailbox, name, timestamps.
 Not stored anywhere: message bodies, attachments, mailcow OAuth tokens (used once by the broker,
 then discarded), the mailcow API key outside `broker.env`.
 
-Audit log (JSON lines on stdout and in `/data/audit.log`, app and broker separately): time,
+Audit log (JSON lines on stdout and in `/data/audit.log`, rotated at 10 MB with five old files
+kept; app and broker separately): time,
 mailbox, client name, tool or operation, counts, result. Never bodies, attachment contents,
 passwords or tokens. HTTP access logs don't contain query strings.
 
@@ -102,5 +103,7 @@ app's database can read the stored app passwords: protect backups of `/data` acc
   internal container names.
 - The client IP for rate limits comes from `X-Forwarded-For` only when the request comes from
   `TRUSTED_PROXIES` (mailcow's nginx).
-- The sign-in page has a strict Content Security Policy, no scripts, no third-party assets, CSRF
-  tokens, `X-Frame-Options: DENY` and `Referrer-Policy: no-referrer`.
+- The sign-in page has a strict Content Security Policy, no scripts, no third-party assets, and
+  `X-Frame-Options: DENY`. Its form only works in the browser that loaded it (the CSRF token is
+  derived from a SameSite login cookie) and only when posted from the page itself (the `Origin`
+  must be the server's own; `Referrer-Policy: same-origin`).

@@ -6,7 +6,9 @@ mailcow-mcp follows [Semantic Versioning](https://semver.org/). Before 1.0, a mi
 happen only in major versions.
 
 Image tags: `X.Y.Z`, `X.Y` (latest patch of a minor version), from 1.0 also `X`, and `latest`.
-Pin `MCP_VERSION` in `.env` to `X.Y` to get fixes without surprises.
+The mailcow kit's `update` pins `MCP_VERSION` in `.env` to the exact release it installs (its
+compose and nginx files belong to that version). With the generic kit you can pin `X.Y` to get
+fixes without surprises.
 
 ## How to upgrade
 
@@ -34,8 +36,15 @@ The archive contains no `.env` or `app.env`, so extracting it over an existing i
 safe.
 
 Database migrations run automatically on start. Downgrading to a version with an older database
-schema isn't supported: back up the volumes first if you might want to go back
-(`docker run --rm -v mailcow-mcp_app-data:/data -v "$PWD":/backup alpine tar czf /backup/app-data.tgz -C /data .`).
+schema isn't supported (an older image refuses to start on a newer database): back up the volumes
+first if you might want to go back. Back up both, `app-data` and `broker-data` (without the broker's
+records every connection has to sign in again):
+
+```sh
+for v in app-data broker-data; do
+  docker run --rm -v "mailcow-mcp_$v:/data" -v "$PWD":/backup alpine tar czf "/backup/$v.tgz" -C /data .
+done
+```
 
 ## mailcow updates
 

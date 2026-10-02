@@ -62,7 +62,8 @@ Same fields as `send_email`; stores the message in Drafts instead of sending. Re
 ### send_draft
 
 Sends a draft (by UID) exactly as it is stored now (you may have edited it in your mail app),
-files it in Sent and removes it from Drafts.
+files it in Sent and removes it from Drafts. If no copy could be saved to Sent, the draft is kept
+(the result says so), so the message still exists in your mailbox.
 
 > "Send the draft to Petr that I just reviewed."
 
@@ -114,7 +115,8 @@ says where it was found.
 
 ### get_thread
 
-The whole conversation around a message, oldest first, across INBOX, Sent, Junk and Archive.
+The whole conversation around a message, oldest first, across INBOX, Sent, Junk and Archive:
+the newest 30 messages of a longer thread (`complete` is then false).
 
 > "Summarise the thread about the office move."
 

@@ -72,7 +72,8 @@ The full guide, with a check and troubleshooting for every step:
 - Email content returned to the model is marked as untrusted to blunt prompt injection; sending
   and releasing tools are marked destructive so clients ask first. **Don't choose "always allow"
   for them.**
-- SMTP is always authenticated; mail server certificates are always verified.
+- SMTP is always authenticated; mail server certificates are verified (`TLS_VERIFY=false` exists
+  for testing only).
 
 Details, threat model and what is stored: [docs/security.md](docs/security.md).
 

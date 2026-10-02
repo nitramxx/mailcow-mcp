@@ -15,12 +15,11 @@ ${LISTEN_IPV6}
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:mailcow_mcp_ssl:5m;
 
-    add_header Strict-Transport-Security "max-age=31536000" always;
-
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $mailcow_mcp_upstream http://mailcow-mcp:8090;
 
-    client_max_body_size 40m;
+    # From MAX_MESSAGE_MB in app.env (attachments travel base64-encoded in tool calls).
+    client_max_body_size ${MAX_BODY_MB}m;
 
     location / {
         proxy_pass $mailcow_mcp_upstream;
