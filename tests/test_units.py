@@ -295,3 +295,32 @@ def test_no_uidplus_refuses_to_expunge_others() -> None:
     client.deleted = []
     session.move("INBOX", [1], "Archive")
     assert client.calls == ["copy", "add_flags", "expunge"]
+
+
+def test_migrations_twice_at_once(tmp_path: Path) -> None:
+    # The app and a CLI command starting together: both see a complete schema.
+    first, second = Database.in_data_dir(tmp_path), Database.in_data_dir(tmp_path)
+    first.migrate()
+    assert second.migrate() == []
+    assert second.version == first.version
+
+
+def test_newer_schema_is_refused(tmp_path: Path) -> None:
+    db = Database.in_data_dir(tmp_path)
+    db.migrate()
+    db.execute(f"PRAGMA user_version = {db.version + 1}")
+    with pytest.raises(RuntimeError, match="newer release"):
+        db.migrate()
+
+
+def test_audit_log_rotates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import mailcow_mcp.audit as audit_module
+
+    monkeypatch.setattr(audit_module, "MAX_FILE_BYTES", 200)
+    audit = AuditLog(tmp_path / "audit.log", stream=io.StringIO())
+    for i in range(100):
+        audit("event", n=i)
+    files = sorted(p.name for p in tmp_path.iterdir())
+    assert files == ["audit.log", *(f"audit.log.{i}" for i in range(1, 6))]
+    assert all(p.stat().st_size < 400 for p in tmp_path.iterdir())
+    assert '"n":99' in (tmp_path / "audit.log").read_text()

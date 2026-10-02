@@ -42,10 +42,12 @@ class Database:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             yield self.conn
+            self.conn.execute("COMMIT")
         except BaseException:
-            self.conn.execute("ROLLBACK")
+            # SQLite may have rolled back already (e.g. on SQLITE_FULL): don't mask the error.
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
             raise
-        self.conn.execute("COMMIT")
 
     def execute(
         self, sql: str, params: tuple[object, ...] | dict[str, object] = ()
@@ -69,22 +71,44 @@ class Database:
         return int(row[0])
 
     def migrate(self, package: str = "mailcow_mcp.migrations") -> list[str]:
-        """Apply pending migrations; return the names of those applied."""
+        """Apply pending migrations; return the names of those applied.
+
+        Each runs in its own transaction that re-reads the version, so two processes
+        starting at once (the app and a CLI command) can't apply one twice.
+        """
+        migrations = available_migrations(package)
+        newest = migrations[-1][0] if migrations else 0
         applied: list[str] = []
-        for number, name, sql in available_migrations(package):
-            if number <= self.version:
-                continue
-            # executescript() commits first, so the transaction is part of the script.
-            try:
-                self.conn.executescript(
-                    f"BEGIN IMMEDIATE;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;"
-                )
-            except sqlite3.Error:
-                if self.conn.in_transaction:
-                    self.conn.execute("ROLLBACK")
-                raise
+        for number, name, sql in migrations:
+            with self.transaction() as conn:
+                if number <= self.version:
+                    continue
+                for statement in _statements(sql):
+                    conn.execute(statement)
+                conn.execute(f"PRAGMA user_version = {number}")
             applied.append(name)
+        if self.version > newest:
+            raise RuntimeError(
+                f"The database ({self.path}) is at schema version {self.version}, newer than this "
+                f"version of mailcow-mcp knows ({newest}): it was used by a newer release. "
+                "Run that release (or newer) again; downgrading isn't supported."
+            )
         return applied
+
+
+def _statements(sql: str) -> Iterator[str]:
+    """The SQL statements of a migration script, one at a time."""
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                yield statement
+            statement = ""
+    if statement.strip() and not all(
+        line.strip().startswith("--") or not line.strip() for line in statement.splitlines()
+    ):
+        raise RuntimeError(f"incomplete SQL statement in a migration: {statement.strip()[:80]}")
 
 
 def available_migrations(package: str = "mailcow_mcp.migrations") -> list[tuple[int, str, str]]:

@@ -18,7 +18,7 @@ import uvicorn
 
 from mailcow_mcp import __version__
 from mailcow_mcp.app import MCP_PATH, create_app
-from mailcow_mcp.audit import AuditLog
+from mailcow_mcp.audit import AUDIT_FILENAME, AuditLog
 from mailcow_mcp.broker import create_broker_app
 from mailcow_mcp.broker_client import BrokerClient
 from mailcow_mcp.config import (
@@ -154,7 +154,8 @@ def cmd_users(args: argparse.Namespace) -> int:
         return config
     rows = _open_database(config).all(
         "SELECT m.username, count(g.id) AS grants, max(g.last_used_at) AS last_used,"
-        " m.last_login_at, group_concat(DISTINCT coalesce(c.client_name, '?')) AS clients"
+        " m.last_login_at, group_concat(DISTINCT CASE WHEN g.id IS NOT NULL"
+        " THEN coalesce(c.client_name, '?') END) AS clients"
         " FROM mailboxes m LEFT JOIN grants g ON g.mailbox_id = m.id"
         " LEFT JOIN clients c ON c.client_id = g.client_id"
         " GROUP BY m.id ORDER BY m.username"
@@ -215,7 +216,8 @@ def cmd_revoke(args: argparse.Namespace) -> int:
         issuer_url=config.public_url,
         resource_url=config.public_url + MCP_PATH,
         login_url=config.public_url + LOGIN_PATH,
-        audit=AuditLog.in_data_dir(config.data_dir),
+        # stderr: the command's own output stays on stdout.
+        audit=AuditLog(config.data_dir / AUDIT_FILENAME, stream=sys.stderr),
     )
     if username is not None:
         count = provider.revoke_mailbox(username)
@@ -297,8 +299,8 @@ def cmd_healthcheck(args: argparse.Namespace) -> int:
     """Probe the local /healthz; used by the container HEALTHCHECK."""
     if args.port:
         ports = [args.port]
-    elif os.environ.get("PORT", "").strip():
-        ports = [int(os.environ["PORT"])]
+    elif (port := os.environ.get("PORT", "").strip()).isdigit():
+        ports = [int(port)]
     else:
         # The same image runs either role; only one of them listens here.
         ports = [DEFAULT_APP_PORT, DEFAULT_BROKER_PORT]

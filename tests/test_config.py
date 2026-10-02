@@ -68,7 +68,7 @@ class TestAppMailcowMode:
         c = load_app_config(mailcow_env())
         assert c.mode is Mode.MAILCOW
         assert c.public_url == "https://mcp.mail.example.com"
-        assert c.broker_url == "http://broker:8091"
+        assert c.broker_url == "http://mcp-broker:8091"
         assert (c.imap_host, c.imap_port, c.imap_security) == ("dovecot-mailcow", 993, Security.SSL)
         assert (c.smtp_host, c.smtp_port, c.smtp_security) == (
             "postfix-mailcow",
@@ -211,6 +211,18 @@ class TestAppMailcowMode:
         with pytest.raises(ConfigError) as exc:
             load_app_config(mailcow_env(SEND_LIMIT_HOUR="50", SEND_LIMIT_DAY="10"))
         assert "SEND_LIMIT_DAY" in errors_of(exc)
+
+    def test_invalid_send_limit_reports_only_itself(self) -> None:
+        with pytest.raises(ConfigError) as exc:
+            load_app_config(mailcow_env(SEND_LIMIT_HOUR="500", SEND_LIMIT_DAY="lots"))
+        assert len(exc.value.errors) == 1, exc.value.errors
+
+    def test_ca_file_must_be_pem(self, tmp_path: Path) -> None:
+        bogus = tmp_path / "ca.pem"
+        bogus.write_text("not a certificate")
+        with pytest.raises(ConfigError) as exc:
+            load_app_config(mailcow_env(TLS_CA_FILE=str(bogus)))
+        assert "TLS_CA_FILE" in errors_of(exc)
 
     def test_loopback_http_public_url_allowed_for_local_testing(self) -> None:
         c = load_app_config(mailcow_env(PUBLIC_URL="http://localhost:8090"))

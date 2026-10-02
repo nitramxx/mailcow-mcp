@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import tzinfo
@@ -135,6 +136,10 @@ class _Reader:
 
     def error(self, name: str, message: str) -> None:
         self.errors.append(f"{name}: {message}")
+
+    def failed(self, *names: str) -> bool:
+        """Whether any of these settings already has an error."""
+        return any(e.split(":", 1)[0] in names for e in self.errors)
 
     def raw(self, name: str) -> str | None:
         """The stripped value, or None when unset or empty."""
@@ -321,6 +326,17 @@ class _Reader:
             return None
         return path
 
+    def ca_file(self, name: str) -> Path | None:
+        """A PEM file with CA certificates (checked now, not when the first TLS connection fails)."""
+        path = self.file(name)
+        if path is not None:
+            try:
+                ssl.create_default_context().load_verify_locations(cafile=str(path))
+            except (ssl.SSLError, OSError, ValueError) as exc:
+                self.error(name, f"not a readable PEM file with CA certificates: {exc}")
+                return None
+        return path
+
     def folders(self) -> dict[str, str]:
         result: dict[str, str] = {}
         for role in FOLDER_ROLES:
@@ -426,7 +442,9 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         shared_secret = r.secret("BROKER_SHARED_SECRET")
 
     broker_url = r.url(
-        "BROKER_URL", r.raw("BROKER_URL") or f"http://broker:{DEFAULT_BROKER_PORT}", allow_http=True
+        "BROKER_URL",
+        r.raw("BROKER_URL") or f"http://mcp-broker:{DEFAULT_BROKER_PORT}",
+        allow_http=True,
     )
 
     imap_host = r.hostname("IMAP_HOST", r.raw("IMAP_HOST") or "dovecot-mailcow")
@@ -459,7 +477,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     send_limit_hour = r.integer("SEND_LIMIT_HOUR", 30, 1, 10_000)
     send_limit_day = r.integer("SEND_LIMIT_DAY", 300, 1, 100_000)
-    if send_limit_day < send_limit_hour:
+    if send_limit_day < send_limit_hour and not r.failed("SEND_LIMIT_HOUR", "SEND_LIMIT_DAY"):
         r.error("SEND_LIMIT_DAY", "must not be lower than SEND_LIMIT_HOUR")
 
     language = (r.raw("DEFAULT_LANGUAGE") or "en").lower()
@@ -490,7 +508,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         carddav_internal=carddav_internal,
         tls_server_name=tls_server_name,
         tls_verify=tls_verify,
-        tls_ca_file=r.file("TLS_CA_FILE"),
+        tls_ca_file=r.ca_file("TLS_CA_FILE"),
         allow_password_login=allow_password_login,
         allowed_domains=r.domains("ALLOWED_DOMAINS"),
         enc_key=r.key("ENC_KEY"),
@@ -531,7 +549,7 @@ def load_broker_config(env: Mapping[str, str] | None = None) -> BrokerConfig:
             r.required("TLS_SERVER_NAME", "the mailcow hostname, e.g. mail.example.com"),
         ),
         tls_verify=r.boolean("TLS_VERIFY", True),
-        tls_ca_file=r.file("TLS_CA_FILE"),
+        tls_ca_file=r.ca_file("TLS_CA_FILE"),
         mailcow_api_key=r.required("MAILCOW_API_KEY", "mailcow → System → Configuration → Access"),
         mailcow_oauth_profile_url=r.url("MAILCOW_OAUTH_PROFILE_URL", profile_raw, allow_path=True),
         broker_shared_secret=r.secret("BROKER_SHARED_SECRET"),

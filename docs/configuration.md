@@ -27,7 +27,7 @@ Generate keys and secrets with `docker run --rm ghcr.io/nitramxx/mailcow-mcp gen
 | `MAILCOW_URL` | required | Public mailcow URL (the browser is sent to its login page). |
 | `MAILCOW_INTERNAL_URL` | empty | e.g. `https://nginx-mailcow`: the app reaches mailcow's nginx directly for the token exchange and contacts (no hairpin NAT). Certificates are checked against `TLS_SERVER_NAME`. |
 | `MAILCOW_OAUTH_CLIENT_ID`, `MAILCOW_OAUTH_CLIENT_SECRET` | required | From mailcow → OAuth2 Apps. Redirect URI there: `<PUBLIC_URL>/oauth/mailcow/callback`. |
-| `BROKER_URL` | `http://broker:8091` | The kit uses `http://mcp-broker:8091` (an alias only on the internal network). |
+| `BROKER_URL` | `http://mcp-broker:8091` | The broker's address; in the kits an alias only on the internal network. |
 | `BROKER_SHARED_SECRET` | required | Same value as the broker's; at least 32 characters. |
 | `ALLOW_PASSWORD_LOGIN` | `false` | Also offer email + password sign-in. |
 
