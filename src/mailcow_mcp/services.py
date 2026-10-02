@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -50,14 +51,12 @@ class SendLimits:
         self.per_day = per_day
         self._clock = clock
 
-    def check(self, username: str) -> None:
-        now = int(self._clock())
-        self.db.execute("DELETE FROM sent_log WHERE sent_at <= ?", (now - 86400,))
-        row = self.db.one(
+    def _check(self, conn: sqlite3.Connection, username: str, now: int) -> None:
+        row = conn.execute(
             "SELECT count(*) AS day, coalesce(sum(sent_at > ?), 0) AS hour FROM sent_log"
-            " WHERE mailbox = ?",
-            (now - 3600, username),
-        )
+            " WHERE mailbox = ? AND sent_at > ?",
+            (now - 3600, username, now - 86400),
+        ).fetchone()
         day, hour = (row["day"], row["hour"]) if row else (0, 0)
         if hour >= self.per_hour:
             raise LimitExceeded(
@@ -66,11 +65,33 @@ class SendLimits:
         if day >= self.per_day:
             raise LimitExceeded(f"Send limit reached: {self.per_day} messages per day.")
 
-    def record(self, username: str, recipients: int) -> None:
+    def check(self, username: str) -> None:
+        """Raises LimitExceeded if the mailbox can't send now (an early check)."""
+        self._check(self.db.conn, username, int(self._clock()))
+
+    def reserve(self, username: str) -> int:
+        """Count a message about to be sent; raises LimitExceeded if over a limit.
+
+        Counted before sending, so parallel calls can't all slip through; ``release``
+        it if nothing was sent.
+        """
+        now = int(self._clock())
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM sent_log WHERE sent_at <= ?", (now - 86400,))
+            self._check(conn, username, now)
+            cursor = conn.execute(
+                "INSERT INTO sent_log (mailbox, sent_at, recipients) VALUES (?, ?, 0)",
+                (username, now),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def settle(self, reservation: int, recipients: int) -> None:
         self.db.execute(
-            "INSERT INTO sent_log (mailbox, sent_at, recipients) VALUES (?, ?, ?)",
-            (username, int(self._clock()), recipients),
+            "UPDATE sent_log SET recipients = ? WHERE id = ?", (recipients, reservation)
         )
+
+    def release(self, reservation: int) -> None:
+        self.db.execute("DELETE FROM sent_log WHERE id = ?", (reservation,))
 
 
 class Services:

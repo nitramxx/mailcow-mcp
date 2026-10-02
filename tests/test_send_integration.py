@@ -11,6 +11,7 @@ from email.policy import default as default_policy
 
 import pytest
 
+from mailcow_mcp.imap import ImapSession
 from mailcow_mcp.mime import parse_message, walk_parts
 
 from conftest import Harness, McpSession, ToolFailed, app_config, make_harness
@@ -229,6 +230,35 @@ def test_draft_lifecycle(alice: McpSession, mailserver: MailServer) -> None:
     assert b"\\Draft" not in flags_of(mailserver, ALICE, "Sent", draft["message_id"])
     with pytest.raises(ToolFailed, match="No message with UID"):
         alice.call("send_draft", uid=draft["uid"])
+
+
+def test_send_draft_keeps_the_draft_if_sent_copy_fails(
+    alice: McpSession, mailserver: MailServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft = alice.call("save_draft", to=["bob@example.test"], subject="Keep", body_text="x")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise imaplib.IMAP4.error("APPEND failed")
+
+    monkeypatch.setattr(ImapSession, "append", fail)
+    sent = alice.call("send_draft", uid=draft["uid"])
+    assert sent["accepted"] == ["bob@example.test"]  # sent, and no error to retry on
+    assert sent["saved_to_sent"] is False
+    assert "kept in Drafts" in sent["note"]
+    assert flags_of(mailserver, ALICE, "Drafts", draft["message_id"])  # still there
+
+
+def test_send_reports_filing_problems_as_a_note(
+    alice: McpSession, mailserver: MailServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise imaplib.IMAP4.abort("connection lost")
+
+    monkeypatch.setattr(ImapSession, "append", fail)
+    sent = alice.call("send_email", to=["bob@example.test"], subject="Filed?", body_text="x")
+    assert sent["accepted"] == ["bob@example.test"]
+    assert sent["saved_to_sent"] is False
+    assert "saving a copy" in sent["note"]
 
 
 def test_delete_draft(alice: McpSession, mailserver: MailServer) -> None:

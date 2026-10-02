@@ -90,9 +90,9 @@ class SmtpSender:
                 if not isinstance(error, CredentialsRejected):
                     log.warning("SMTP login on %s:%d failed: %s", self.host, self.port, exc)
                 raise error from exc
-            except (aiosmtplib.SMTPNotSupported, aiosmtplib.SMTPException) as exc:
-                if isinstance(exc, aiosmtplib.SMTPServerDisconnected):
-                    raise
+            except (aiosmtplib.SMTPServerDisconnected, aiosmtplib.SMTPTimeoutError):
+                raise  # the server is unavailable (below)
+            except aiosmtplib.SMTPException as exc:
                 raise MailError(
                     "The outgoing mail server offers no usable authentication method, so "
                     "nothing was sent."

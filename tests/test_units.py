@@ -14,7 +14,7 @@ from imapclient.exceptions import LoginError
 
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.db import Database, available_migrations
-from mailcow_mcp.errors import CredentialsRejected, ServerUnavailable
+from mailcow_mcp.errors import CredentialsRejected, LimitExceeded, ServerUnavailable
 from mailcow_mcp.i18n import Translator, messages, pick_language
 from mailcow_mcp.imap import login_rejected
 from mailcow_mcp.login import normalize_email
@@ -27,6 +27,7 @@ from mailcow_mcp.messages import (
 )
 from mailcow_mcp.mime import parse_message
 from mailcow_mcp.ratelimit import RateLimiter, client_key
+from mailcow_mcp.services import SendLimits
 from mailcow_mcp.smtp import auth_error
 from mailcow_mcp.tls import client_context
 
@@ -249,3 +250,16 @@ def test_broken_files_are_extraction_errors() -> None:
 
 def test_text_with_a_codec_that_isnt_a_charset() -> None:
     assert extract_text(b"hello", "text/plain", "a.txt", "idna") == "hello"
+
+
+def test_send_limit_reservations(tmp_path: Path) -> None:
+    db = Database(str(tmp_path / "db.sqlite"))
+    db.migrate()
+    limits = SendLimits(db, per_hour=2, per_day=10)
+    first = limits.reserve("a@example.org")
+    limits.reserve("a@example.org")
+    with pytest.raises(LimitExceeded):
+        limits.reserve("a@example.org")  # counted before sending: parallel calls can't pass
+    limits.release(first)  # nothing was sent
+    limits.check("a@example.org")
+    limits.reserve("b@example.org")  # per mailbox
