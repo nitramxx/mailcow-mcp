@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import date, datetime
 from email.utils import getaddresses
 from typing import Annotated, Any
@@ -31,6 +32,7 @@ from mailcow_mcp.messages import (
     body_text,
     extract_text,
     header,
+    header_values,
     iso_timestamp,
     message_date,
     parse_day,
@@ -40,6 +42,8 @@ from mailcow_mcp.messages import (
 from mailcow_mcp.mime import find_part, parse_message, part_bytes, safe_filename
 from mailcow_mcp.services import Services
 from mailcow_mcp.untrusted import LISTING_NOTICE, wrap
+
+log = logging.getLogger(__name__)
 
 READ_ONLY = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
@@ -191,16 +195,13 @@ def _summaries(session: ImapSession, folder: str, uids: list[int]) -> list[Messa
         if uid not in fetched:
             continue
         raw, flags, size, internal = fetched[uid]
-        result.append(
-            summarize(
-                uid,
-                folder,
-                parse_message(raw),
-                flags,
-                size,
-                internal if isinstance(internal, datetime) else None,
-            )
-        )
+        when = internal if isinstance(internal, datetime) else None
+        try:
+            summary = summarize(uid, folder, parse_message(raw), flags, size, when)
+        except Exception:  # one broken message mustn't hide the others
+            log.warning("could not summarize message %d in a folder", uid, exc_info=True)
+            summary = summarize(uid, folder, parse_message(b""), flags, size, when)
+        result.append(summary)
     return result
 
 
@@ -497,11 +498,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                         recipients = {
                             addr.lower()
                             for _, addr in getaddresses(
-                                [
-                                    str(v)
-                                    for n in ("To", "Cc", "Bcc")
-                                    for v in headers.get_all(n, [])
-                                ]
+                                [v for n in ("To", "Cc", "Bcc") for v in header_values(headers, n)]
                             )
                             if addr
                         }

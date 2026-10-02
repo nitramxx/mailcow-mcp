@@ -6,6 +6,7 @@ import html
 import io
 import re
 from datetime import UTC, date, datetime
+from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
 
@@ -35,6 +36,9 @@ MAX_BODY_CHARS = 100_000
 MAX_EXTRACT_CHARS = 50_000
 MAX_EXTRACT_BYTES = 5 * 1024 * 1024
 MAX_PDF_PAGES = 200
+# Summaries are listed by the dozen: a sender can't make one huge.
+MAX_SUMMARY_SUBJECT_CHARS = 1000
+MAX_SUMMARY_ADDRESSES = 100
 
 _BLOCK_END = re.compile(
     r"</(p|div|tr|li|h[1-6]|blockquote|pre|table|section|article|header|footer)\s*>|<br\s*/?>|<hr\s*/?>",
@@ -70,15 +74,39 @@ class AttachmentInfo(BaseModel):
     size: int
 
 
+def _decoded(raw: str) -> str:
+    try:
+        return str(make_header(decode_header(raw)))
+    except Exception:  # malformed encoded words: keep the raw text
+        return raw
+
+
+def header_values(message: Message, name: str) -> list[str]:
+    """All values of a header as text, even if it's malformed.
+
+    The email package's header parser raises on some malformed headers (e.g.
+    ``To: "``); one such message must not break a whole listing.
+    """
+    try:
+        return [str(v) for v in message.get_all(name, [])]
+    except Exception:  # see above
+        lower = name.lower()
+        return [_decoded(str(v)) for k, v in message.raw_items() if k.lower() == lower]
+
+
 def header(message: Message, name: str) -> str:
-    value = message.get(name)
-    return " ".join(str(value).split()) if value is not None else ""
+    values = header_values(message, name)
+    return " ".join(values[0].split()) if values else ""
 
 
 def addresses(message: Message, name: str) -> list[str]:
-    values = [str(v) for v in message.get_all(name, [])]
+    values = header_values(message, name)
+    try:
+        pairs = getaddresses(values)
+    except Exception:  # unparseable: show nothing rather than fail
+        return []
     result = []
-    for display, addr in getaddresses(values):
+    for display, addr in pairs:
         if not addr:
             continue
         display = " ".join(display.split())
@@ -87,7 +115,7 @@ def addresses(message: Message, name: str) -> list[str]:
 
 
 def message_date(message: Message, fallback: datetime | None = None) -> datetime | None:
-    raw = message.get("Date")
+    raw = header(message, "Date")
     if raw:
         try:
             parsed = parsedate_to_datetime(str(raw))
@@ -130,9 +158,9 @@ def summarize(
         message_id=header(headers, "Message-ID") or None,
         date=when.isoformat() if when else None,
         sender=from_[0] if from_ else None,
-        to=addresses(headers, "To"),
-        cc=addresses(headers, "Cc"),
-        subject=header(headers, "Subject"),
+        to=addresses(headers, "To")[:MAX_SUMMARY_ADDRESSES],
+        cc=addresses(headers, "Cc")[:MAX_SUMMARY_ADDRESSES],
+        subject=header(headers, "Subject")[:MAX_SUMMARY_SUBJECT_CHARS],
         seen=b"\\Seen" in flags,
         flagged=b"\\Flagged" in flags,
         answered=b"\\Answered" in flags,

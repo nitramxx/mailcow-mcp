@@ -29,6 +29,7 @@ from mailcow_mcp.compose import (
 from mailcow_mcp.config import SaveSent
 from mailcow_mcp.errors import InvalidInput, LimitExceeded, MailError
 from mailcow_mcp.imap import DRAFT, SEEN, ImapSession
+from mailcow_mcp.messages import header, header_values
 from mailcow_mcp.mime import check_attachment, find_part, parse_message, part_bytes
 from mailcow_mcp.services import Mailbox, Services
 
@@ -325,12 +326,12 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     raw, _ = session.fetch_raw(folder, uid, max_bytes=services.max_message_bytes)
                     message = parse_message(raw)
                     recipients: list[str] = []
-                    for header in ("To", "Cc", "Bcc"):
-                        for _, addr in getaddresses([str(v) for v in message.get_all(header, [])]):
+                    for name in ("To", "Cc", "Bcc"):
+                        for _, addr in getaddresses(header_values(message, name)):
                             normalized = normalize_address(addr)
                             if normalized is None:
                                 raise InvalidInput(
-                                    f"The draft has an invalid address in {header}: {addr!r}"
+                                    f"The draft has an invalid address in {name}: {addr!r}"
                                 )
                             if normalized not in recipients:
                                 recipients.append(normalized)
@@ -338,13 +339,13 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                         raise InvalidInput("The draft has no recipients.")
                     if len(recipients) > 50:
                         raise LimitExceeded("At most 50 recipients per message.")
-                    senders = getaddresses([str(v) for v in message.get_all("From", [])])
+                    senders = getaddresses(header_values(message, "From"))
                     sender = normalize_address(senders[0][1]) if len(senders) == 1 else None
                     if sender is None:
                         raise InvalidInput("The draft has no valid From address.")
                     if "Message-ID" not in message:
                         message["Message-ID"] = new_message_id(sender.rpartition("@")[2])
-                    message_id = str(message["Message-ID"])
+                    message_id = header(message, "Message-ID")
                     del message["Date"]
                     message["Date"] = format_date(config.timezone)
                     copy = message.as_bytes(policy=POLICY)

@@ -16,6 +16,8 @@ from mailcow_mcp.errors import CredentialsRejected, ServerUnavailable
 from mailcow_mcp.i18n import Translator, messages, pick_language
 from mailcow_mcp.imap import login_rejected
 from mailcow_mcp.login import normalize_email
+from mailcow_mcp.messages import summarize
+from mailcow_mcp.mime import parse_message
 from mailcow_mcp.ratelimit import RateLimiter
 from mailcow_mcp.smtp import auth_error
 from mailcow_mcp.tls import client_context
@@ -183,3 +185,12 @@ def test_smtp_auth_error_other_codes_are_not_a_sign_out() -> None:
     error = auth_error(aiosmtplib.SMTPAuthenticationError(530, "Must issue a STARTTLS first"))
     assert not isinstance(error, (CredentialsRejected, ServerUnavailable))
     assert "530" in str(error)
+
+
+@pytest.mark.parametrize(
+    "broken", [b'To: "', b"Message-ID: <a@[b>", b'From: (%=?=?)"', b'Cc: a@b.c, ,"']
+)
+def test_summary_of_malformed_headers(broken: bytes) -> None:
+    message = parse_message(broken + b"\r\nSubject: =?utf-8?q?ok?=\r\n\r\nbody")
+    summary = summarize(1, "INBOX", message, ())
+    assert summary.subject == "ok"

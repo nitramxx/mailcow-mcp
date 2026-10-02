@@ -347,3 +347,23 @@ def test_list_spam_and_rescue(alice: McpSession, mailserver: MailServer) -> None
     assert "may train" in rescued["note"]  # generic mode
     found = alice.call("search_messages", folder="INBOX", subject=f"Not spam {tag}")
     assert found["total"] == 1
+
+
+def test_malformed_headers_dont_break_a_listing(alice: McpSession, mailserver: MailServer) -> None:
+    folder = f"Test-{unique()}"
+    good = imap_append(mailserver, folder, message("still listed"))
+    conn = mailserver.imap(ALICE)
+    try:
+        for broken in (b'To: "', b"Message-ID: <a@[b>", b'From: (%=?=?)"'):
+            raw = broken + b"\r\nSubject: broken\r\n\r\nbody\r\n"
+            typ, data = conn.append(f'"{folder}"', "", imaplib.Time2Internaldate(time.time()), raw)
+            assert typ == "OK", data
+    finally:
+        conn.logout()
+    listed = alice.call("list_messages", folder=folder)
+    assert listed["total"] == 4
+    subjects = sorted(m["subject"] for m in listed["messages"])
+    assert subjects == ["broken", "broken", "broken", "still listed"]
+    assert alice.call("read_message", folder=folder, uid=good)["subject"] == "still listed"
+    for m in listed["messages"]:
+        alice.call("read_message", folder=folder, uid=m["uid"])
