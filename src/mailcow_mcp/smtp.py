@@ -23,6 +23,16 @@ log = logging.getLogger(__name__)
 TIMEOUT_SECONDS = 60
 
 
+def auth_error(exc: aiosmtplib.SMTPAuthenticationError) -> MailError:
+    """535 (and 534, e.g. "log in with a browser") mean the password isn't accepted;
+    a 4xx reply, e.g. 454 "Temporary authentication failure", is the server's problem."""
+    if exc.code in (534, 535):
+        return CredentialsRejected()
+    if 400 <= exc.code < 500:
+        return ServerUnavailable("The outgoing mail server")
+    return MailError(f"The outgoing mail server refused to sign in: {exc.code} {exc.message}")
+
+
 @dataclass(frozen=True)
 class SendResult:
     accepted: list[str]
@@ -76,7 +86,10 @@ class SmtpSender:
             try:
                 await smtp.login(username, password)
             except aiosmtplib.SMTPAuthenticationError as exc:
-                raise CredentialsRejected() from exc
+                error = auth_error(exc)
+                if not isinstance(error, CredentialsRejected):
+                    log.warning("SMTP login on %s:%d failed: %s", self.host, self.port, exc)
+                raise error from exc
             except (aiosmtplib.SMTPNotSupported, aiosmtplib.SMTPException) as exc:
                 if isinstance(exc, aiosmtplib.SMTPServerDisconnected):
                     raise

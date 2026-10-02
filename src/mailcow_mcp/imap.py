@@ -7,6 +7,7 @@ worker thread (``anyio.to_thread``). Reads use BODY.PEEK so they never set \\See
 from __future__ import annotations
 
 import enum
+import imaplib
 import logging
 import re
 import ssl
@@ -25,6 +26,12 @@ from mailcow_mcp.tls import client_context
 log = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 30
+
+# RFC 5530 response codes: these mean the credentials are wrong or no longer valid...
+_REJECTED_CODES = ("[AUTHENTICATIONFAILED]", "[AUTHORIZATIONFAILED]", "[EXPIRED]")
+# ...these that the server can't check them right now (Dovecot: "[UNAVAILABLE]
+# Temporary authentication failure" when its user database is down).
+_TEMPORARY_CODES = ("[UNAVAILABLE]", "[SERVERBUG]", "[INUSE]", "[LIMIT]")
 
 SPECIAL_USE_FLAGS = {
     "sent": b"\\Sent",
@@ -329,12 +336,31 @@ class ImapConnector:
             client.plain_login(username, password)
         except LoginError as exc:
             _close(client)
-            raise CredentialsRejected() from exc
+            if login_rejected(exc):
+                raise CredentialsRejected() from exc
+            log.warning("IMAP login on %s:%d failed temporarily: %s", self.host, self.port, exc)
+            raise ServerUnavailable() from exc
         except (OSError, ssl.SSLError, IMAPClientError) as exc:
             _close(client)
             log.warning("IMAP login on %s:%d failed: %s", self.host, self.port, exc)
             raise ServerUnavailable() from exc
         return ImapSession(client, self.folder_names)
+
+
+def login_rejected(exc: LoginError) -> bool:
+    """Whether a failed login means wrong credentials, not a temporary server problem.
+
+    imapclient raises LoginError for every failure, including a dropped connection.
+    Servers without response codes are taken at their word: the login was refused.
+    """
+    if isinstance(exc.__context__, (imaplib.IMAP4.abort, OSError)):
+        return False
+    message = str(exc).upper()
+    if any(code in message for code in _REJECTED_CODES):
+        return True
+    if any(code in message for code in _TEMPORARY_CODES):
+        return False
+    return "TEMPORARY" not in message and "TRY AGAIN" not in message
 
 
 def _close(client: imapclient.IMAPClient) -> None:

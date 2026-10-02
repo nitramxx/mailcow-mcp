@@ -149,16 +149,11 @@ class Services:
         try:
             yield mailbox
         except (CredentialsRejected, RevokedCapability) as exc:
-            self.provider.revoke_grant(mailbox.grant_id, reason="credentials_rejected")
-            if isinstance(exc, RevokedCapability):
-                raise ToolError(SIGNED_OUT) from exc
-            self.audit(
-                name,
-                result="credentials_rejected",
-                mailbox=mailbox.username,
-                client=mailbox.client_name,
-            )
-            raise ToolError(str(exc)) from exc
+            revoked = isinstance(exc, RevokedCapability)
+            reason = "revoked_capability" if revoked else "credentials_rejected"
+            self.provider.revoke_grant(mailbox.grant_id, reason=reason)
+            self.audit(name, result=reason, mailbox=mailbox.username, client=mailbox.client_name)
+            raise ToolError(SIGNED_OUT if revoked else str(exc)) from exc
         except MailError as exc:
             result = re.sub(r"(?<!^)(?=[A-Z])", "_", type(exc).__name__).lower()
             self.audit(name, result=result, mailbox=mailbox.username, client=mailbox.client_name)

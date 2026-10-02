@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import imaplib
 import json
 import socket
 import ssl
 from pathlib import Path
 
+import aiosmtplib
 import pytest
+from imapclient.exceptions import LoginError
 
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.db import Database, available_migrations
+from mailcow_mcp.errors import CredentialsRejected, ServerUnavailable
 from mailcow_mcp.i18n import Translator, messages, pick_language
+from mailcow_mcp.imap import login_rejected
 from mailcow_mcp.login import normalize_email
 from mailcow_mcp.ratelimit import RateLimiter
+from mailcow_mcp.smtp import auth_error
 from mailcow_mcp.tls import client_context
 
 
@@ -139,3 +145,41 @@ def test_audit_log_writes_json_lines(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert record["attempts"] == 1
     assert "ip" not in record
     assert capsys.readouterr().out.strip() == line
+
+
+def _login_error(message: str, cause: Exception | None = None) -> LoginError:
+    """As imapclient raises it: LoginError(str(original)) inside the except block."""
+    error = LoginError(message)
+    error.__context__ = cause or imaplib.IMAP4.error(message)
+    return error
+
+
+@pytest.mark.parametrize(
+    ("error", "rejected"),
+    [
+        (_login_error("b'[AUTHENTICATIONFAILED] Authentication failed.'"), True),
+        (_login_error("b'[EXPIRED] Password expired.'"), True),
+        (_login_error("b'LOGIN failed'"), True),  # no response code: taken as refused
+        (_login_error("b'[UNAVAILABLE] Temporary authentication failure.'"), False),
+        (_login_error("b'Temporary authentication failure, try again'"), False),
+        (_login_error("socket error: EOF", imaplib.IMAP4.abort("socket error: EOF")), False),
+        (_login_error("timed out", TimeoutError("timed out")), False),
+    ],
+)
+def test_imap_login_rejected(error: LoginError, rejected: bool) -> None:
+    assert login_rejected(error) is rejected
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [(535, CredentialsRejected), (534, CredentialsRejected), (454, ServerUnavailable)],
+)
+def test_smtp_auth_error(code: int, expected: type[Exception]) -> None:
+    error = auth_error(aiosmtplib.SMTPAuthenticationError(code, "x"))
+    assert type(error) is expected
+
+
+def test_smtp_auth_error_other_codes_are_not_a_sign_out() -> None:
+    error = auth_error(aiosmtplib.SMTPAuthenticationError(530, "Must issue a STARTTLS first"))
+    assert not isinstance(error, (CredentialsRejected, ServerUnavailable))
+    assert "530" in str(error)
