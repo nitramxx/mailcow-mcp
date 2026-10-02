@@ -7,6 +7,7 @@ import socket
 import ssl
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import aiosmtplib
 import pytest
@@ -14,9 +15,9 @@ from imapclient.exceptions import LoginError
 
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.db import Database, available_migrations
-from mailcow_mcp.errors import CredentialsRejected, LimitExceeded, ServerUnavailable
+from mailcow_mcp.errors import CredentialsRejected, LimitExceeded, MailError, ServerUnavailable
 from mailcow_mcp.i18n import Translator, messages, pick_language
-from mailcow_mcp.imap import login_rejected
+from mailcow_mcp.imap import ImapSession, login_rejected
 from mailcow_mcp.login import normalize_email
 from mailcow_mcp.messages import (
     DOCX,
@@ -263,3 +264,34 @@ def test_send_limit_reservations(tmp_path: Path) -> None:
     limits.release(first)  # nothing was sent
     limits.check("a@example.org")
     limits.reserve("b@example.org")  # per mailbox
+
+
+class FakeImap:
+    """Just enough of IMAPClient for move/delete without MOVE or UIDPLUS."""
+
+    def __init__(self, deleted: list[int]) -> None:
+        self.deleted = deleted
+        self.calls: list[str] = []
+
+    def has_capability(self, name: str) -> bool:
+        return False
+
+    def select_folder(self, folder: str, readonly: bool = False) -> dict[bytes, object]:
+        return {}
+
+    def search(self, criteria: list[str]) -> list[int]:
+        return self.deleted
+
+    def __getattr__(self, name: str) -> Any:
+        return lambda *args, **kwargs: self.calls.append(name)
+
+
+def test_no_uidplus_refuses_to_expunge_others() -> None:
+    client = FakeImap(deleted=[7])
+    session = ImapSession(client, {})
+    with pytest.raises(MailError, match="Nothing was changed"):
+        session.move("INBOX", [1], "Archive")
+    assert client.calls == []
+    client.deleted = []
+    session.move("INBOX", [1], "Archive")
+    assert client.calls == ["copy", "add_flags", "expunge"]

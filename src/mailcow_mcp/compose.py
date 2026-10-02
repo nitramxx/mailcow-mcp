@@ -60,7 +60,8 @@ POLICY = _SendPolicy(linesep="\r\n", max_line_length=76, cte_type="7bit")
 _FORBIDDEN_IN_HEADERS = re.compile(r"[\r\n\x00]")
 _LOCAL_PART_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,64}$")
 _DOMAIN_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
-_MESSAGE_ID_RE = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
+# Printable ASCII except <, > and @ on each side (RFC 5322 msg-id).
+_MESSAGE_ID_RE = re.compile(r"^<[!-;=?A-~]+@[!-;=?A-~]+>$")
 
 
 # --- tool input models -------------------------------------------------------

@@ -15,6 +15,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 
+from mailcow_mcp.broker_client import RevokedCapability
 from mailcow_mcp.compose import normalize_message_id
 from mailcow_mcp.config import Mode
 from mailcow_mcp.errors import InvalidInput, MailError
@@ -529,6 +530,8 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 else:
                     try:
                         items = (await services.broker_call(mailbox, "quarantine_list"))["items"]
+                    except RevokedCapability:
+                        raise  # signs the connection out
                     except MailError as exc:
                         result.note = f"Quarantine not checked: {exc}"
                         items = []

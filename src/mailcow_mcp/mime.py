@@ -11,6 +11,7 @@ from email.policy import default as default_policy
 from mailcow_mcp.errors import InvalidInput, NotFound
 
 MAX_FILENAME_LENGTH = 150
+MAX_PART_DEPTH = 20  # deeper multiparts are treated as one opaque part
 
 _MIME_TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$")
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]')
@@ -102,6 +103,9 @@ def check_attachment(filename: str | None, data: bytes, declared: str | None) ->
     mime = (declared or "").strip().lower() or sniffed or "application/octet-stream"
     if not _MIME_TYPE_RE.match(mime):
         raise InvalidInput(f"{mime!r} is not a valid MIME type.")
+    if mime.startswith(("multipart/", "message/")):
+        # Containers can't be base64-encoded (RFC 2046); an attached email goes as a file.
+        mime = "application/octet-stream"
     if mime in _RECOGNISED and sniffed != mime:
         found = f"is {sniffed}" if sniffed else "isn't recognisable"
         raise InvalidInput(f"{name} is declared as {mime}, but its content {found}.")
@@ -111,7 +115,10 @@ def check_attachment(filename: str | None, data: bytes, declared: str | None) ->
 
 
 def parse_message(raw: bytes) -> EmailMessage:
-    message = BytesParser(policy=default_policy).parsebytes(raw)
+    try:
+        message = BytesParser(policy=default_policy).parsebytes(raw)
+    except RecursionError as exc:  # thousands of nested multiparts
+        raise InvalidInput("The message is nested too deeply to read.") from exc
     assert isinstance(message, EmailMessage)  # noqa: S101 - the default policy guarantees it
     return message
 
@@ -124,7 +131,7 @@ def walk_parts(message: Message) -> list[tuple[str, Message]]:
     result: list[tuple[str, Message]] = []
 
     def visit(part: Message, number: str) -> None:
-        if part.get_content_maintype() == "multipart":
+        if part.get_content_maintype() == "multipart" and number.count(".") < MAX_PART_DEPTH:
             payload = part.get_payload()
             if isinstance(payload, list):
                 for index, child in enumerate(payload, 1):

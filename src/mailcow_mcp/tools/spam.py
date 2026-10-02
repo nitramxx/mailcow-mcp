@@ -9,6 +9,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
+from mailcow_mcp.broker_client import RevokedCapability
 from mailcow_mcp.config import Mode
 from mailcow_mcp.errors import MailError, NotFound
 from mailcow_mcp.imap import ImapSession
@@ -82,6 +83,8 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             if services.config.mode is Mode.MAILCOW:
                 try:
                     quarantined = (await services.broker_call(mailbox, "quarantine_list"))["items"]
+                except RevokedCapability:
+                    raise  # signs the connection out
                 except MailError as exc:
                     note = f"Quarantine not included: {exc}"
                     quarantined = []
@@ -97,6 +100,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     for q in quarantined[:limit]
                 ]
                 items.sort(key=lambda i: iso_timestamp(i.date), reverse=True)
+                items = items[:limit]
             services.audit(
                 "list_spam", mailbox=mailbox.username, client=mailbox.client_name, count=len(items)
             )

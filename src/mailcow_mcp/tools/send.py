@@ -115,8 +115,9 @@ def _collect_attachments(
             folder = session.resolve(ref.folder)
             raw, _ = session.fetch_raw(folder, ref.uid, max_bytes=max_bytes)
             part = find_part(parse_message(raw), ref.part_id)
+            default_name = "message.eml" if part.get_content_type() == "message/rfc822" else None
             filename, mime = check_attachment(
-                part.get_filename() or None, part_bytes(part), part.get_content_type()
+                part.get_filename() or default_name, part_bytes(part), part.get_content_type()
             )
             files.append(FileAttachment(filename, mime, part_bytes(part)))
         if sum(len(f.data) for f in files) > max_bytes:

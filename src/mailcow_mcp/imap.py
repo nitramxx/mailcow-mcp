@@ -133,14 +133,14 @@ class ImapSession:
         for f in folders:
             if f.special_use == role:
                 return f.name
-        names = [n for n in [self._folder_names.get(role)] if n] + COMMON_NAMES[role]
-        for wanted in names:
-            for f in folders:
-                if f.name.casefold() == wanted.casefold():
-                    return f.name
-            for f in folders:
-                if f.leaf.casefold() == wanted.casefold():
-                    return f.name
+        names = [n.casefold() for n in [self._folder_names.get(role)] if n]
+        names += [n.casefold() for n in COMMON_NAMES[role]]
+        # Exact names first ("Sent Items"), then a subfolder's leaf ("Clients/Sent").
+        for leaf in (False, True):
+            for wanted in names:
+                for f in folders:
+                    if (f.leaf if leaf else f.name).casefold() == wanted:
+                        return f.name
         return None
 
     def require_folder(self, role: str) -> str:
@@ -230,12 +230,29 @@ class ImapSession:
         if self.client.has_capability("MOVE"):
             self.client.move(list(uids), destination)
             return
+        self._check_expunge_is_safe(uids)
         self.client.copy(list(uids), destination)
         self.client.add_flags(list(uids), [DELETED], silent=True)
+        self._expunge(uids)
+
+    def _check_expunge_is_safe(self, uids: Sequence[int]) -> None:
+        """Without UIDPLUS, EXPUNGE removes every message marked \\Deleted in the folder,
+        including ones the user marked in their mail app: refuse rather than do that."""
+        if self.client.has_capability("UIDPLUS"):
+            return
+        others = set(self.client.search(["DELETED"])) - set(uids)
+        if others:
+            raise MailError(
+                "This mail server can't remove single messages (no UIDPLUS), and the folder has "
+                "other messages marked as deleted that would be removed permanently too. "
+                "Nothing was changed."
+            )
+
+    def _expunge(self, uids: Sequence[int]) -> None:
         if self.client.has_capability("UIDPLUS"):
             self.client.uid_expunge(list(uids))
         else:
-            self.client.expunge()
+            self.client.expunge()  # checked by _check_expunge_is_safe
 
     def append(self, folder: str, message: bytes, flags: Iterable[bytes]) -> int | None:
         """Store a message; returns its UID when the server reports it (UIDPLUS)."""
@@ -296,11 +313,9 @@ class ImapSession:
     def delete(self, folder: str, uid: int) -> None:
         """Permanently remove one message (used for drafts only)."""
         self.select(folder, readonly=False)
+        self._check_expunge_is_safe([uid])
         self.client.add_flags([uid], [DELETED], silent=True)
-        if self.client.has_capability("UIDPLUS"):
-            self.client.uid_expunge([uid])
-        else:
-            self.client.expunge()
+        self._expunge([uid])
 
     def gmail(self) -> bool:
         """Gmail files sent mail itself (SAVE_SENT=auto)."""

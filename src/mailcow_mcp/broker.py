@@ -65,7 +65,8 @@ DEPROVISIONED_RETENTION_SECONDS = 30 * 86400
 
 _NAME_UNSAFE = re.compile(r"[^\w .()\-]", re.UNICODE)
 _QUEUE_ID = re.compile(r"^([0-9A-Za-z]{6,20}): (.*)$")
-_MESSAGE_ID = re.compile(r"^<[^<>\s@]+@[^<>\s@]+>$")
+# Printable ASCII except <, > and @ on each side (RFC 5322 msg-id).
+_MESSAGE_ID = re.compile(r"^<[!-;=?A-~]+@[!-;=?A-~]+>$")
 
 
 class BrokerError(Exception):
