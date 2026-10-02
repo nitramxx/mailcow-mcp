@@ -6,6 +6,9 @@ mail permanently except `delete_draft` (drafts only) and `delete_from_quarantine
 Email content in tool results is wrapped and labelled as untrusted (see
 [security.md](security.md)).
 
+With `SENDING=drafts_only` the server doesn't offer `send_email` and `send_draft`: messages are
+saved with `save_draft`, and you send them from your mail app.
+
 | Tool | Mode | Changes something |
 |---|---|---|
 | [send_email](#send_email) | both | sends |

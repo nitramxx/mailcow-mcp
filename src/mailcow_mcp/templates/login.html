@@ -12,7 +12,7 @@
 
 <h2>{{ t("can_heading") }}</h2>
 <ul class="access">
-  <li>{{ t("can_send") }}</li>
+  <li>{{ t("can_send") if sending else t("can_drafts") }}</li>
   <li>{{ t("can_read") }}</li>
   <li>{{ t("can_contacts") }}</li>
 </ul>
@@ -42,6 +42,6 @@
 <footer>
   {% if mailcow_login %}<p>{{ t("privacy_mailcow") }}</p>{% endif %}
   {% if password_login %}<p>{{ t("privacy_password") }}</p>{% endif %}
-  <p>{{ t("privacy_agent") }}</p>
+  <p>{{ t("privacy_agent") if sending else t("privacy_agent_drafts") }}</p>
 </footer>
 {% endblock %}

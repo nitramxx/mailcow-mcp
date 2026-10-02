@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import anyio
@@ -28,7 +29,7 @@ from mailcow_mcp.compose import (
     pdf_attachment,
     prepare_stored,
 )
-from mailcow_mcp.config import SaveSent
+from mailcow_mcp.config import SaveSent, Sending
 from mailcow_mcp.errors import LimitExceeded, MailError
 from mailcow_mcp.imap import DRAFT, SEEN, ImapSession
 from mailcow_mcp.messages import header
@@ -65,8 +66,7 @@ FromName = Annotated[
     Field(
         max_length=MAX_NAME_LENGTH,
         description=(
-            "Set from_name so recipients see a display name; if omitted, the configured default "
-            "for from_address is used."
+            "The display name in From; if omitted, the mailbox's name (as set in mailcow) is used."
         ),
     ),
 ]
@@ -82,7 +82,7 @@ class SendResult(BaseModel):
 
 
 class DraftResult(BaseModel):
-    uid: int | None = Field(description="Draft UID in the Drafts folder, for send_draft.")
+    uid: int | None = Field(description="Draft UID in the Drafts folder.")
     message_id: str
     folder: str
 
@@ -90,6 +90,21 @@ class DraftResult(BaseModel):
 class DeleteResult(BaseModel):
     deleted: bool
     folder: str
+
+
+SAVE_DRAFT_DESCRIPTION = (
+    "Save an email as a draft in the Drafts folder without sending it. Takes the same fields as "
+    "send_email. The user can review and edit it in their mail app; send it later with "
+    "send_draft."
+)
+SAVE_DRAFT_ONLY_DESCRIPTION = (
+    "Write an email and save it in the Drafts folder: this server doesn't send mail, the user "
+    "reviews and sends it from their mail app. Give the body as Markdown (saved as HTML with a "
+    "plain-text alternative) or as plain text. Attachments can be uploaded (base64), taken from "
+    "a message in the mailbox, or rendered as a PDF from Markdown. Set in_reply_to to a "
+    "Message-ID to reply in its thread. Set from_name so recipients see a display name; if "
+    "omitted, the mailbox's name is used."
+)
 
 
 def _references(session: ImapSession, message_id: str) -> list[str]:
@@ -135,6 +150,11 @@ def _collect_attachments(
 
 def register(mcp: MCPServer[Any], services: Services) -> None:
     config = services.config
+    sending = config.sending is Sending.ENABLED
+
+    def sending_tool(**options: Any) -> Callable[[Any], Any]:
+        """Registers a tool that sends mail, unless the server only saves drafts."""
+        return mcp.tool(**options) if sending else (lambda fn: fn)
 
     def save_sent(session: ImapSession, message: bytes) -> tuple[bool, str | None, str | None]:
         """(saved, folder, note); not saved without a note means: by configuration."""
@@ -221,7 +241,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         services.send_limits.settle(reservation, len(result.accepted))
         return result
 
-    @mcp.tool(
+    @sending_tool(
         name="send_email",
         title="Send email",
         description=(
@@ -229,7 +249,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             "with a plain-text alternative) or as plain text. Attachments can be uploaded "
             "(base64), taken from a message in the mailbox, or rendered as a PDF from Markdown. "
             "Set in_reply_to to a Message-ID to reply in its thread. Set from_name so recipients "
-            "see a display name; if omitted, the configured default for from_address is used. "
+            "see a display name; if omitted, the mailbox's name is used. "
             "Returns the new message's Message-ID." + USER_CONTENT_NOTE
         ),
         annotations=ToolAnnotations(
@@ -290,11 +310,8 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     @mcp.tool(
         name="save_draft",
         title="Save draft",
-        description=(
-            "Save an email as a draft in the Drafts folder without sending it. Takes the same "
-            "fields as send_email. The user can review and edit it in their mail app; send it "
-            "later with send_draft." + USER_CONTENT_NOTE
-        ),
+        description=(SAVE_DRAFT_DESCRIPTION if sending else SAVE_DRAFT_ONLY_DESCRIPTION)
+        + USER_CONTENT_NOTE,
         annotations=ToolAnnotations(
             read_only_hint=False,
             destructive_hint=False,
@@ -346,7 +363,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             )
             return DraftResult(uid=uid, message_id=composed.message_id, folder=folder)
 
-    @mcp.tool(
+    @sending_tool(
         name="send_draft",
         title="Send draft",
         description=(

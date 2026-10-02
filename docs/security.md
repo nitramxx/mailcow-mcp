@@ -56,6 +56,8 @@ request. mailcow-mcp reduces the risk:
   before running them.
 - The sending tools' descriptions tell the model that recipients and content must come from the
   user, never from email it has read.
+- `SENDING=drafts_only` removes sending altogether: even a model that follows injected
+  instructions can only write drafts, which a person reviews and sends.
 
 None of this is a guarantee. **Don't choose "always allow" for the sending and releasing tools.**
 Read what the agent is about to send, and to whom.

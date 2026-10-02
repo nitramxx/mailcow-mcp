@@ -35,5 +35,7 @@
   "error_mailcow_unavailable": "mailcow can't be reached right now. Try again in a few minutes.",
   "error_domain_mailcow": "This server doesn't accept sign-ins for your domain.",
   "rate_limited_title": "Too many attempts",
-  "error_cross_origin": "This sign-in page was submitted from another site. Go back to your app and connect again."
+  "error_cross_origin": "This sign-in page was submitted from another site. Go back to your app and connect again.",
+  "can_drafts": "save drafts in your name for you to send (this server doesn't send mail)",
+  "privacy_agent_drafts": "An AI agent with this access can write drafts in your name; you send them yourself. Only connect apps you trust."
 }

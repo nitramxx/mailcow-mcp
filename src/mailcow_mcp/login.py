@@ -23,7 +23,7 @@ from starlette.routing import Route, request_response
 
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.broker_client import BrokerClient
-from mailcow_mcp.config import AppConfig
+from mailcow_mcp.config import AppConfig, Sending
 from mailcow_mcp.crypto import hash_secret, new_secret
 from mailcow_mcp.errors import MailError, ServerUnavailable
 from mailcow_mcp.i18n import Translator, pick_language
@@ -233,6 +233,7 @@ class LoginPages:
             resume=pending.resume or "",
             csrf=form_token(pending, browser_id),
             password_login=self.config.allow_password_login,
+            sending=self.config.sending is Sending.ENABLED,
             error=error,
             email=email,
         )

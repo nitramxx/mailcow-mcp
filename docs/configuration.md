@@ -50,6 +50,7 @@ Generate keys and secrets with `docker run --rm ghcr.io/nitramxx/mailcow-mcp gen
 |---|---|---|
 | `ALLOWED_DOMAINS` | empty (any) | Comma-separated domains allowed to sign in. |
 | `TIMEZONE` | system (UTC in the container) | Time zone of the Date header, e.g. `Europe/Prague`. The mailcow kit copies mailcow's `TZ`. |
+| `SENDING` | `enabled` | `drafts_only`: no tool sends mail. `send_email` and `send_draft` aren't offered; clients save messages with `save_draft`, and users review and send them from their mail app. |
 | `SAVE_SENT` | `always` | `always`, `never`, or `auto` (skip for servers that file sent mail themselves, e.g. Gmail). |
 | `SEND_LIMIT_HOUR`, `SEND_LIMIT_DAY` | `30`, `300` | Messages per mailbox. |
 | `MAX_MESSAGE_MB` | `15` | Largest outgoing message, attachments included (1–100). The mailcow kit sizes nginx's upload limit from it when the setup runs. |

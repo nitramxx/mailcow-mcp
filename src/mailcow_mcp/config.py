@@ -52,6 +52,11 @@ class Security(StrEnum):
     STARTTLS = "starttls"
 
 
+class Sending(StrEnum):
+    ENABLED = "enabled"
+    DRAFTS_ONLY = "drafts_only"  # no send tools: messages are saved as drafts for the user to send
+
+
 class SaveSent(StrEnum):
     AUTO = "auto"
     ALWAYS = "always"
@@ -104,6 +109,7 @@ class AppConfig:
     allow_password_login: bool
     allowed_domains: tuple[str, ...]
     enc_key: str = field(repr=False)
+    sending: Sending
     save_sent: SaveSent
     timezone: tzinfo | None  # None: the system's local time zone
     send_limit_hour: int
@@ -492,6 +498,7 @@ def load_app_config(env: Mapping[str, str] | None = None) -> AppConfig:
         allow_password_login=allow_password_login,
         allowed_domains=r.domains("ALLOWED_DOMAINS"),
         enc_key=r.key("ENC_KEY"),
+        sending=r.choice("SENDING", Sending, Sending.ENABLED),
         save_sent=r.choice("SAVE_SENT", SaveSent, SaveSent.ALWAYS),
         timezone=r.timezone("TIMEZONE"),
         send_limit_hour=send_limit_hour,
