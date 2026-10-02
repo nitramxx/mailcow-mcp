@@ -41,7 +41,7 @@ from mailcow_mcp.oauth import Provider
 
 log = logging.getLogger("mailcow_mcp")
 
-EXIT_CONFIG = 2
+EXIT_CONFIG = 2  # configuration and usage errors (argparse uses 2 for usage, too)
 
 
 def _fail(message: str) -> int:

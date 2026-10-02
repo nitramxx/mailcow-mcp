@@ -468,7 +468,7 @@ class TestSignIn:
 
 class TestPasswordLoginDisabled:
     @pytest.fixture
-    def mailcow(self) -> Iterator[Harness]:
+    def mailcow_app(self) -> Iterator[Harness]:
         yield from make_harness(
             app_config(
                 MODE="mailcow",
@@ -480,10 +480,10 @@ class TestPasswordLoginDisabled:
             )
         )
 
-    def test_no_password_form_in_mailcow_mode(self, mailcow: Harness) -> None:
-        client_id = mailcow.register()["client_id"]
+    def test_no_password_form_in_mailcow_mode(self, mailcow_app: Harness) -> None:
+        client_id = mailcow_app.register()["client_id"]
         _, challenge = pkce_pair()
-        page = mailcow.client.get(mailcow.authorize(client_id, challenge))
+        page = mailcow_app.client.get(mailcow_app.authorize(client_id, challenge))
         assert page.status_code == 200
         assert "Sign in with mailcow" in page.text
         assert 'type="password"' not in page.text

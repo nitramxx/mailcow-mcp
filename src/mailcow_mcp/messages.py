@@ -32,7 +32,7 @@ SUMMARY_HEADERS = (
     "X-Spam-Status",
 )
 
-MAX_BODY_CHARS = 100_000
+MAX_READ_BODY_CHARS = 100_000  # of a message read (compose.MAX_BODY_CHARS: of one sent)
 MAX_EXTRACT_CHARS = 50_000
 MAX_EXTRACT_BYTES = 5 * 1024 * 1024
 MAX_PDF_PAGES = 200

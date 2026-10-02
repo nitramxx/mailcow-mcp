@@ -189,7 +189,8 @@ class Broker:
             lock = self._locks[mailbox] = anyio.Lock()
         return lock
 
-    def mailbox_of(self, token: Any, operation: str) -> Capability:
+    def authorize(self, token: Any, operation: str) -> Capability:
+        """The capability's mailbox, if it's valid and active; counts against its rate limit."""
         try:
             capability = self.signer.verify(token)
         except InvalidCapability as exc:
@@ -297,7 +298,7 @@ class Broker:
         return ours
 
     async def deprovision(self, body: dict[str, Any]) -> dict[str, Any]:
-        capability = self.mailbox_of(body.get("capability"), "deprovision")
+        capability = self.authorize(body.get("capability"), "deprovision")
         deleted = await self._delete_app_password(capability.mailbox, capability.app_password_id)
         self.audit(
             "deprovision",
@@ -373,7 +374,7 @@ class Broker:
         return deleted
 
     async def aliases(self, body: dict[str, Any]) -> dict[str, Any]:
-        capability = self.mailbox_of(body.get("capability"), "aliases")
+        capability = self.authorize(body.get("capability"), "aliases")
         addresses = await self.owned_addresses(capability.mailbox)
         self.audit("aliases", mailbox=capability.mailbox, count=len(addresses) - 1)
         return {"mailbox": capability.mailbox, "aliases": sorted(addresses - {capability.mailbox})}
@@ -411,7 +412,7 @@ class Broker:
         return item
 
     async def quarantine_list(self, body: dict[str, Any]) -> dict[str, Any]:
-        capability = self.mailbox_of(body.get("capability"), "quarantine_list")
+        capability = self.authorize(body.get("capability"), "quarantine_list")
         owned = await self.owned_addresses(capability.mailbox)
         items = [
             self._quarantine_view(i)
@@ -423,14 +424,14 @@ class Broker:
         return {"items": items}
 
     async def quarantine_release(self, body: dict[str, Any]) -> dict[str, Any]:
-        capability = self.mailbox_of(body.get("capability"), "quarantine_release")
+        capability = self.authorize(body.get("capability"), "quarantine_release")
         item = await self._owned_item(capability, body.get("id"), "quarantine_release")
         await self.api.quarantine_release(int(item["id"]))
         self.audit("quarantine_release", mailbox=capability.mailbox, id=int(item["id"]))
         return {"released": int(item["id"])}
 
     async def quarantine_delete(self, body: dict[str, Any]) -> dict[str, Any]:
-        capability = self.mailbox_of(body.get("capability"), "quarantine_delete")
+        capability = self.authorize(body.get("capability"), "quarantine_delete")
         item = await self._owned_item(capability, body.get("id"), "quarantine_delete")
         await self.api.quarantine_delete(int(item["id"]))
         self.audit("quarantine_delete", mailbox=capability.mailbox, id=int(item["id"]))
@@ -443,7 +444,7 @@ class Broker:
         return self._logs[1]
 
     async def delivery_status(self, body: dict[str, Any]) -> dict[str, Any]:
-        capability = self.mailbox_of(body.get("capability"), "delivery_status")
+        capability = self.authorize(body.get("capability"), "delivery_status")
         message_id = body.get("message_id")
         if not isinstance(message_id, str) or not _MESSAGE_ID.match(message_id):
             raise BrokerError(400, "invalid_request", "message_id must look like <id@domain>")

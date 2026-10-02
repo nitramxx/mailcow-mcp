@@ -16,7 +16,7 @@ MAX_MESSAGES = 30  # the newest of a longer thread
 MAX_CANDIDATES = 500  # per folder
 MAX_BYTES = 50 * 1024 * 1024  # all bodies of one thread together
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
-MAX_BODY_CHARS = 10_000
+MAX_THREAD_BODY_CHARS = 10_000  # per message
 _ROLES = ("sent", "junk", "archive")
 
 
@@ -104,7 +104,7 @@ def _related(
 def _entry(folder: str, uid: int, raw: bytes, *, spam: bool) -> ThreadMessage:
     message = parse_message(raw)
     text, _source = body_text(message)
-    text, truncated = truncate(text, MAX_BODY_CHARS)
+    text, truncated = truncate(text, MAX_THREAD_BODY_CHARS)
     when = message_date(message)
     from_ = addresses(message, "From")
     return ThreadMessage(

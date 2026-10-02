@@ -20,8 +20,8 @@ class BrokerRefused(MailError):
         self.code = code
 
 
-class RevokedCapability(BrokerRefused):
-    """The broker no longer knows this connection's app password."""
+class CapabilityRejected(BrokerRefused):
+    """The broker refused this connection's capability: invalid, or its app password is gone."""
 
 
 class BrokerClient:
@@ -68,7 +68,7 @@ class BrokerClient:
             log.error("the broker refused BROKER_SHARED_SECRET; check both containers' settings")
             raise ServerUnavailable("The mailcow connector (broker)")
         if code in ("invalid_capability", "revoked_capability"):
-            raise RevokedCapability(code, message)
+            raise CapabilityRejected(code, message)
         if response.status_code == 404:
             raise NotFound(message)
         if response.status_code in (502, 503):

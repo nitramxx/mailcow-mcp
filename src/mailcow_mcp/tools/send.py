@@ -34,7 +34,7 @@ from mailcow_mcp.imap import DRAFT, SEEN, ImapSession
 from mailcow_mcp.messages import header
 from mailcow_mcp.mime import check_attachment, find_part, parse_message, part_bytes
 from mailcow_mcp.services import Mailbox, Services
-from mailcow_mcp.smtp import SendResult as SmtpResult
+from mailcow_mcp.smtp import SmtpResult
 
 log = logging.getLogger(__name__)
 

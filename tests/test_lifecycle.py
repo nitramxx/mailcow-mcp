@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from mailcow_mcp.broker_client import BrokerRefused, RevokedCapability
+from mailcow_mcp.broker_client import BrokerRefused, CapabilityRejected
 from mailcow_mcp.errors import ServerUnavailable
 from mailcow_mcp.lifecycle import MAX_ATTEMPTS, drain_deprovision_queue, reconcile
 from mailcow_mcp.oauth import Provider
@@ -48,7 +48,7 @@ async def test_done_and_already_gone_leave_the_queue(harness: Harness) -> None:
     queue(harness.provider, "cap-a", "cap-b")
     assert await drain_deprovision_queue(harness.provider, FakeBroker()) == 2  # type: ignore[arg-type]
     queue(harness.provider, "cap-c")
-    gone = FakeBroker(RevokedCapability("revoked_capability", "gone"))
+    gone = FakeBroker(CapabilityRejected("revoked_capability", "gone"))
     assert await drain_deprovision_queue(harness.provider, gone) == 1  # type: ignore[arg-type]
     assert queued(harness.provider) == 0
 

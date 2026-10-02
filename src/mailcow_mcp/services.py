@@ -17,7 +17,7 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mailcow_mcp.audit import AuditLog
-from mailcow_mcp.broker_client import BrokerClient, RevokedCapability
+from mailcow_mcp.broker_client import BrokerClient, CapabilityRejected
 from mailcow_mcp.config import AppConfig
 from mailcow_mcp.contacts import CardDav
 from mailcow_mcp.crypto import Box
@@ -173,8 +173,8 @@ class Services:
         mailbox = self.mailbox_for(ctx)
         try:
             yield mailbox
-        except (CredentialsRejected, RevokedCapability) as exc:
-            revoked = isinstance(exc, RevokedCapability)
+        except (CredentialsRejected, CapabilityRejected) as exc:
+            revoked = isinstance(exc, CapabilityRejected)
             reason = "revoked_capability" if revoked else "credentials_rejected"
             self.provider.revoke_grant(mailbox.grant_id, reason=reason)
             self.audit(name, result=reason, mailbox=mailbox.username, client=mailbox.client_name)

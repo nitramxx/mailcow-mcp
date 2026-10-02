@@ -33,7 +33,7 @@ def auth_error(exc: aiosmtplib.SMTPAuthenticationError) -> MailError:
 
 
 @dataclass(frozen=True)
-class SendResult:
+class SmtpResult:
     accepted: list[str]
     refused: dict[str, str]  # recipient → server response
 
@@ -60,7 +60,7 @@ class SmtpSender:
         envelope_from: str,
         recipients: Sequence[str],
         message: bytes,
-    ) -> SendResult:
+    ) -> SmtpResult:
         smtp = aiosmtplib.SMTP(
             hostname=self.host,
             port=self.port,
@@ -124,4 +124,4 @@ class SmtpSender:
                 smtp.close()
         refused_text = {rcpt: f"{resp.code} {resp.message}" for rcpt, resp in refused.items()}
         accepted = [r for r in recipients if r not in refused]
-        return SendResult(accepted=accepted, refused=refused_text)
+        return SmtpResult(accepted=accepted, refused=refused_text)

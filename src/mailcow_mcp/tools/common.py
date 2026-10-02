@@ -11,7 +11,7 @@ from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from mailcow_mcp.broker_client import RevokedCapability
+from mailcow_mcp.broker_client import CapabilityRejected
 from mailcow_mcp.config import Mode
 from mailcow_mcp.errors import MailError
 from mailcow_mcp.imap import ImapSession
@@ -25,7 +25,8 @@ log = logging.getLogger(__name__)
 READ_ONLY = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
-CHANGES_FLAGS = ToolAnnotations(
+# Changes state that can be changed back (flags, folders).
+NOT_DESTRUCTIVE = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
 
@@ -119,7 +120,7 @@ async def quarantine(
         items: list[dict[str, Any]] = (await services.broker_call(mailbox, "quarantine_list"))[
             "items"
         ]
-    except RevokedCapability:
+    except CapabilityRejected:
         raise
     except MailError as exc:
         return [], str(exc)

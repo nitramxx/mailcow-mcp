@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from mailcow_mcp.broker_client import BrokerClient, RevokedCapability
+from mailcow_mcp.broker_client import BrokerClient, CapabilityRejected
 from mailcow_mcp.errors import MailError, ServerUnavailable
 from mailcow_mcp.oauth import Provider
 
@@ -19,7 +19,7 @@ async def drain_deprovision_queue(provider: Provider, broker: BrokerClient) -> i
     for queue_id, mailbox, capability in provider.pending_deprovisions():
         try:
             await broker.deprovision(capability)
-        except RevokedCapability:
+        except CapabilityRejected:
             pass  # already gone in the broker's records
         except ServerUnavailable:
             break  # broker or mailcow down: the rest would fail the same way

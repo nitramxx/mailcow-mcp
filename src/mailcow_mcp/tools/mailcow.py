@@ -15,7 +15,7 @@ from mailcow_mcp.errors import ContactsAuthFailed, CredentialsRejected
 from mailcow_mcp.limits import MAX_CONTACT_QUERY, MAX_MESSAGE_ID
 from mailcow_mcp.services import Services
 from mailcow_mcp.tools.common import READ_ONLY
-from mailcow_mcp.untrusted import LISTING_NOTICE, SERVER_NOTICE
+from mailcow_mcp.untrusted import CONTACTS_NOTICE, SERVER_NOTICE
 
 QUARANTINE_ACTION = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
@@ -72,7 +72,7 @@ class ContactResult(BaseModel):
 class Contacts(BaseModel):
     query: str
     contacts: list[ContactResult]
-    notice: str = LISTING_NOTICE
+    notice: str = CONTACTS_NOTICE
 
 
 def register(mcp: MCPServer[Any], services: Services) -> None:

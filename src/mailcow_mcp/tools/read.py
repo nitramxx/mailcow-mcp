@@ -22,9 +22,9 @@ from mailcow_mcp.imap import FLAGGED, SEEN, ImapSession, or_headers
 from mailcow_mcp.limits import MAX_FOLDER_NAME, MAX_MESSAGE_ID, MAX_PART_ID, MAX_SEARCH_VALUE
 from mailcow_mcp.messages import (
     IMAGE_TYPES,
-    MAX_BODY_CHARS,
     MAX_EXTRACT_BYTES,
     MAX_EXTRACT_CHARS,
+    MAX_READ_BODY_CHARS,
     AttachmentInfo,
     ExtractionError,
     MessageSummary,
@@ -43,7 +43,7 @@ from mailcow_mcp.mime import find_part, parse_message, part_bytes, safe_filename
 from mailcow_mcp.services import Services
 from mailcow_mcp.threads import ThreadMessage, find_thread
 from mailcow_mcp.tools.common import (
-    CHANGES_FLAGS,
+    NOT_DESTRUCTIVE,
     READ_ONLY,
     FolderName,
     Moved,
@@ -286,7 +286,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             )
             message = parse_message(raw)
             text, source = body_text(message)
-            text, truncated = truncate(text, MAX_BODY_CHARS)
+            text, truncated = truncate(text, MAX_READ_BODY_CHARS)
             spam = _is_junk(session, name)
             when = message_date(message)
             from_ = addresses(message, "From")
@@ -497,7 +497,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         name="mark_messages",
         title="Mark messages",
         description="Mark messages as read or unread, and/or flagged or unflagged.",
-        annotations=CHANGES_FLAGS,
+        annotations=NOT_DESTRUCTIVE,
     )
     async def mark_messages(
         ctx: Context[Any, Any],
@@ -524,7 +524,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         name="move_messages",
         title="Move messages",
         description="Move messages to another folder (e.g. archive, trash). Nothing is deleted permanently.",
-        annotations=CHANGES_FLAGS,
+        annotations=NOT_DESTRUCTIVE,
     )
     async def move_messages(
         ctx: Context[Any, Any],

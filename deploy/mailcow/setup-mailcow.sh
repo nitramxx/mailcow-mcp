@@ -183,11 +183,6 @@ docker network inspect "$NETWORK" >/dev/null 2>&1 \
     || die "docker network $NETWORK not found: is mailcow running?"
 
 # --- addresses -----------------------------------------------------------------
-existing() {
-    if [ -f "$KIT_DIR/.env" ]; then
-        grep -E "^$1=" "$KIT_DIR/.env" | cut -d= -f2- || true
-    fi
-}
 used_ips="$(docker network inspect "$NETWORK" -f '{{range .Containers}}{{.IPv4Address}} {{end}}' | tr ' ' '\n' | cut -d/ -f1)"
 # Stopped containers keep their fixed addresses too (they aren't listed on the network).
 for id in $(docker ps -aq --filter "network=$NETWORK"); do
@@ -204,11 +199,11 @@ pick_ip() {
     done
     die "no free address in $IPV4_NETWORK.231-247"
 }
-APP_IP="$(existing APP_IP)"; APP_IP="${APP_IP:-$(pick_ip "")}"
-BROKER_IP="$(existing BROKER_IP)"; BROKER_IP="${BROKER_IP:-$(pick_ip "$APP_IP")}"
+APP_IP="$(env_value "$KIT_DIR/.env" APP_IP)"; APP_IP="${APP_IP:-$(pick_ip "")}"
+BROKER_IP="$(env_value "$KIT_DIR/.env" BROKER_IP)"; BROKER_IP="${BROKER_IP:-$(pick_ip "$APP_IP")}"
 
 # The kit's internal network (docker-compose.yml) must not collide with another network.
-INTERNAL_SUBNET="$(existing INTERNAL_SUBNET)"; INTERNAL_SUBNET="${INTERNAL_SUBNET:-172.31.253.0/24}"
+INTERNAL_SUBNET="$(env_value "$KIT_DIR/.env" INTERNAL_SUBNET)"; INTERNAL_SUBNET="${INTERNAL_SUBNET:-172.31.253.0/24}"
 for net in $(docker network ls -q); do
     read -r net_name net_subnets <<<"$(docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}' "$net")"
     if [ "$net_name" != "mailcow-mcp_internal" ] && grep -qwF "$INTERNAL_SUBNET" <<<"$net_subnets"; then
