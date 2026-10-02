@@ -280,9 +280,14 @@ def create_app(
     carddav: CardDav | None = None,
     clock: Callable[[], float] = time.time,
 ) -> App:
+    owned: list[BrokerClient | MailcowOAuth] = []  # closed on shutdown; injected ones aren't
     if config.mode is Mode.MAILCOW:
-        broker = broker or BrokerClient(config.broker_url, config.broker_shared_secret or "")
-        mailcow_oauth = mailcow_oauth or MailcowOAuth(config)
+        if broker is None:
+            broker = BrokerClient(config.broker_url, config.broker_shared_secret or "")
+            owned.append(broker)
+        if mailcow_oauth is None:
+            mailcow_oauth = MailcowOAuth(config)
+            owned.append(mailcow_oauth)
     db = db if db is not None else Database.in_data_dir(config.data_dir)
     db.migrate()
     audit = audit if audit is not None else AuditLog.in_data_dir(config.data_dir)
@@ -454,16 +459,16 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
-        async with mcp.session_manager.run(), anyio.create_task_group() as tasks:
-            tasks.start_soon(purge_periodically)
-            if broker is not None:
-                tasks.start_soon(manage_app_passwords, broker)
-            yield
-            tasks.cancel_scope.cancel()
-        if broker is not None:
-            await broker.aclose()
-        if mailcow_oauth is not None:
-            await mailcow_oauth.aclose()
+        try:
+            async with mcp.session_manager.run(), anyio.create_task_group() as tasks:
+                tasks.start_soon(purge_periodically)
+                if broker is not None:
+                    tasks.start_soon(manage_app_passwords, broker)
+                yield
+                tasks.cancel_scope.cancel()
+        finally:
+            for client in owned:
+                await client.aclose()
 
     app: ASGIApp = Starlette(routes=routes, lifespan=lifespan)
     app = OAuthLimitMiddleware(

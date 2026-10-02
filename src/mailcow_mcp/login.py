@@ -24,7 +24,7 @@ from starlette.routing import Route, request_response
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.broker_client import BrokerClient
 from mailcow_mcp.config import AppConfig
-from mailcow_mcp.crypto import new_secret
+from mailcow_mcp.crypto import hash_secret, new_secret
 from mailcow_mcp.errors import MailError, ServerUnavailable
 from mailcow_mcp.i18n import Translator, pick_language
 from mailcow_mcp.imap import LoginResult, PasswordVerifier
@@ -105,7 +105,7 @@ class LoginPages:
         self.broker = broker
         self.secure_cookies = config.public_url.startswith("https://")
         prefix = "__Host-" if self.secure_cookies else ""
-        self.state_cookie = prefix + "mcp_mailcow"
+        self.state_cookie_prefix = prefix + "mcp_mailcow_"
         self.browser_cookie = prefix + "mcp_login"
         self.public_origin = canonical_url(config.public_url)
         self.templates = jinja2.Environment(
@@ -167,6 +167,10 @@ class LoginPages:
 
     def _expired(self, t: Translator) -> HTMLResponse:
         return self._message(t, "expired_title", "expired_body", 400)
+
+    def _state_cookie(self, state: str) -> str:
+        # One cookie per sign-in, so two tabs signing in at once don't undo each other.
+        return self.state_cookie_prefix + hash_secret(state)[:16]
 
     def _browser_id(self, request: Request) -> str | None:
         value = request.cookies.get(self.browser_cookie, "")
@@ -352,15 +356,19 @@ class LoginPages:
         response = RedirectResponse(self.mailcow.authorize_url(state), status_code=303)
         # Binds the callback to this browser: mailcow's redirect back must carry the
         # same state as the cookie (Lax: sent on that top-level navigation).
-        self._set_cookie(response, self.state_cookie, state, "lax")
+        self._set_cookie(response, self._state_cookie(state), state, "lax")
         return response
 
     def _mailcow_error(
         self, request: Request, t: Translator, pending: PendingAuthorization, key: str, status: int
     ) -> Response:
         response = self._login_page(request, t, pending, status_code=status, error=t(key))
-        self._delete_cookie(response, self.state_cookie)
+        self._clear_state(request, response)
         return response
+
+    def _clear_state(self, callback: Request, response: Response) -> None:
+        """Delete the state cookie of the sign-in this mailcow callback belongs to."""
+        self._delete_cookie(response, self._state_cookie(callback.query_params.get("state", "")))
 
     async def mailcow_callback(self, request: Request) -> Response:
         assert self.mailcow is not None and self.broker is not None  # noqa: S101 - mailcow mode
@@ -369,7 +377,7 @@ class LoginPages:
         if not self.page_limit.hit(client_key(ip)):
             return self._message(t, "rate_limited_title", "error_rate_limited", 429)
         state = request.query_params.get("state", "")
-        cookie = request.cookies.get(self.state_cookie, "")
+        cookie = request.cookies.get(self._state_cookie(state), "") if state else ""
         if not state or not _same(state, cookie):
             self.audit("login", result="state_mismatch", ip=ip)
             return self._expired(t)
@@ -446,7 +454,7 @@ class LoginPages:
         response = RedirectResponse(
             redirect, status_code=303, headers={"Cache-Control": "no-store"}
         )
-        self._delete_cookie(response, self.state_cookie)
+        self._clear_state(request, response)
         return response
 
     async def _undo(self, capability: str) -> None:

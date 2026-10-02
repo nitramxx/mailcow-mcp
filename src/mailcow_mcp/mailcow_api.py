@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import logging
 import re
-import ssl
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -47,10 +47,6 @@ def _message(response: httpx.Response) -> str:
     return ""
 
 
-def _ssl_context(server_name: str, verify: bool, ca_file: Any) -> ssl.SSLContext:
-    return client_context(server_name=server_name, verify=verify, ca_file=ca_file)
-
-
 class MailcowApi:
     def __init__(
         self,
@@ -63,7 +59,7 @@ class MailcowApi:
         ca_file: Any = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        context = _ssl_context(server_name, verify, ca_file)
+        context = client_context(server_name=server_name, verify=verify, ca_file=ca_file)
         # Connect to the internal name, but present and verify the mailcow hostname.
         headers = {"Host": server_name, "Accept": "application/json"}
         self._api = httpx.AsyncClient(
@@ -115,8 +111,11 @@ class MailcowApi:
         failures = [
             i for i in items if isinstance(i, dict) and i.get("type") in ("danger", "error")
         ]
-        if failures or not items:
-            message = failures[0].get("msg") if failures else "empty response"
+        # Success is an explicit {"type": "success"}; anything else ({}, [], unknown shapes)
+        # means mailcow didn't do it.
+        succeeded = any(isinstance(i, dict) and i.get("type") == "success" for i in items)
+        if failures or not succeeded:
+            message = failures[0].get("msg") if failures else "no success reported"
             raise MailcowError(f"mailcow refused {path}: {message}")
 
     async def _get(self, path: str) -> Any:
@@ -142,11 +141,15 @@ class MailcowApi:
             raise MailcowUnavailable(
                 f"mailcow OAuth profile unreachable: {type(exc).__name__}"
             ) from exc
+        if response.status_code >= 500:
+            raise MailcowUnavailable(f"mailcow OAuth profile: HTTP {response.status_code}")
         try:
             data = response.json()
         except ValueError as exc:
             raise TokenRejected("invalid profile response") from exc
-        username = data.get("username") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            raise TokenRejected("invalid profile response")
+        username = data.get("username")
         if response.status_code != 200 or not data.get("success") or not isinstance(username, str):
             raise TokenRejected("mailcow did not accept the token")
         if str(data.get("active", "1")) not in ("1", "True", "true"):
@@ -180,7 +183,9 @@ class MailcowApi:
         )
 
     async def app_passwords(self, username: str) -> list[dict[str, Any]]:
-        rows = self._rows(await self._get(f"/api/v1/get/app-passwd/all/{username}"))
+        rows = self._rows(
+            await self._get(f"/api/v1/get/app-passwd/all/{quote(username, safe='@')}")
+        )
         result = []
         for row in rows:
             row.pop("password", None)  # mailcow includes the hash

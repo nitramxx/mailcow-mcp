@@ -76,6 +76,10 @@ def connect(app: Harness, certs: Path) -> tuple[str, dict[str, Any]]:
     return client_id, tokens
 
 
+def state_cookies(app: Harness) -> dict[str, str]:
+    return {k: v for k, v in app.client.cookies.items() if k.startswith("mcp_mailcow_")}
+
+
 def in_app(app: Harness, job: Any, broker: BrokerSetup) -> Any:
     """Run a background job on the app's event loop (where its HTTP clients live)."""
     return app.client.portal.call(job, app.provider, broker.client)  # type: ignore[union-attr]
@@ -120,14 +124,14 @@ def test_redirect_to_mailcow(app: Harness, running_mailcow: RunningMailcow) -> N
     assert params["client_id"] == "0123456789ab"
     assert params["redirect_uri"] == f"{BASE_URL}/oauth/mailcow/callback"
     assert params["scope"] == "profile"
-    assert params["state"] == app.client.cookies.get("mcp_mailcow")
+    assert params["state"] in state_cookies(app).values()
 
 
 def test_full_sign_in(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
     client_id, response = sign_in(app, certs)
     assert response.status_code == 303
     assert response.headers["location"].startswith(REDIRECT_URI + "?code=")
-    assert "mcp_mailcow" not in app.client.cookies  # state cookie cleared
+    assert state_cookies(app) == {}  # state cookie cleared
     (password,) = mailcow.passwords_of("alice@example.test")
     assert password["name"].startswith("MCP: Claude (")
     grant = app.db.one(
@@ -153,7 +157,8 @@ def test_state_must_match_the_cookie(app: Harness, certs: Path) -> None:
     _, url, _ = start(app)
     back = at_mailcow(url, certs)
     callback = back.headers["location"].removeprefix(BASE_URL)
-    app.client.cookies.set("mcp_mailcow", "attacker-state")
+    (name,) = state_cookies(app)
+    app.client.cookies.set(name, "attacker-state")
     assert app.client.get(callback).status_code == 400
     app.client.cookies.clear()
     assert app.client.get(callback).status_code == 400
@@ -335,3 +340,15 @@ def test_broker_unreachable_during_sign_in(
     _, response = sign_in(app, certs)
     assert response.status_code == 503
     assert "mailcow can" in response.text
+
+
+def test_two_tabs_can_sign_in_at_once(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
+    _, first_url, _ = start(app)
+    _, second_url, _ = start(app)  # another tab, before the first returns from mailcow
+    for url in (first_url, second_url):
+        back = at_mailcow(url, certs)
+        done = app.client.get(
+            back.headers["location"].removeprefix(BASE_URL), follow_redirects=False
+        )
+        assert done.status_code == 303, done.text
+    assert len(mailcow.app_passwords) == 2

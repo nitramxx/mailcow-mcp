@@ -29,6 +29,8 @@ def pick_language(accept_language: str | None, default: str) -> str:
                     quality = float(params.strip()[2:])
                 except ValueError:
                     continue
+                if quality <= 0:
+                    continue  # q=0: "not this one"
             ranked.append((-quality, index, tag.strip().lower().split("-")[0]))
         for _, _, lang in sorted(ranked):
             if lang in LANGUAGES:

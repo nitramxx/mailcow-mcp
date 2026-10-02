@@ -25,3 +25,5 @@ def setup_logging() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     logging.getLogger("uvicorn.access").addFilter(StripQueryString())
+    # httpx logs every request URL at INFO, e.g. mailcow API paths naming a mailbox.
+    logging.getLogger("httpx").setLevel(logging.WARNING)

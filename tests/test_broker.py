@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from mailcow_mcp.broker import (
 )
 from mailcow_mcp.capability import CapabilitySigner, InvalidCapability
 from mailcow_mcp.config import generate_key
+from mailcow_mcp.mailcow_api import MailcowApi, MailcowError, MailcowUnavailable, TokenRejected
 from mailcow_mcp.ratelimit import RateLimiter
 
 from mailcow_fixtures import SHARED_SECRET, BrokerSetup, make_broker
@@ -467,3 +469,40 @@ class TestMailboxScopedOperations:
             "delivery_status", capability=result["capability"], message_id="no brackets"
         )
         assert bad.status_code == 400
+
+
+class TestMailcowApiResponses:
+    @staticmethod
+    def api(handler: Any) -> MailcowApi:
+        return MailcowApi(
+            "https://mailcow.test",
+            "key",
+            "https://mailcow.test/oauth/profile",
+            server_name="mailcow.test",
+            transport=httpx.MockTransport(handler),
+        )
+
+    async def test_writes_need_an_explicit_success(self) -> None:
+        bodies: list[Any] = [{}, [], [{"msg": "?"}]]
+        for body in bodies:
+            api = self.api(lambda request, body=body: httpx.Response(200, json=body))
+            with pytest.raises(MailcowError, match="no success reported"):
+                await api.delete_app_passwords([1])
+
+    async def test_profile_answers(self) -> None:
+        api = self.api(lambda request: httpx.Response(200, json=[{"username": "a@b.c"}]))
+        with pytest.raises(TokenRejected):
+            await api.profile_username("token")
+        api = self.api(lambda request: httpx.Response(502, text="<html>Bad gateway</html>"))
+        with pytest.raises(MailcowUnavailable):
+            await api.profile_username("token")
+
+    async def test_mailbox_is_quoted_in_paths(self) -> None:
+        paths: list[str] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.raw_path.decode())
+            return httpx.Response(200, json={})
+
+        await self.api(handle).app_passwords("a#b@example.test")
+        assert paths == ["/api/v1/get/app-passwd/all/a%23b@example.test"]
