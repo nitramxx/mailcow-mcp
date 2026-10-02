@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from datetime import date, datetime
 from email.utils import getaddresses
@@ -41,7 +42,7 @@ from mailcow_mcp.messages import (
 )
 from mailcow_mcp.mime import find_part, parse_message, part_bytes, safe_filename
 from mailcow_mcp.services import Services
-from mailcow_mcp.untrusted import LISTING_NOTICE, wrap
+from mailcow_mcp.untrusted import LISTING_NOTICE, MESSAGE_NOTICE, wrap
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,11 @@ Folder = Annotated[
 Uids = Annotated[
     list[int], Field(min_length=1, max_length=100, description="Message UIDs in the folder.")
 ]
+# Largest message read at all (at least twice what may be sent).
+MAX_FETCH_BYTES = 25 * 1024 * 1024
 MAX_THREAD_MESSAGES = 30
+MAX_THREAD_CANDIDATES = 500  # per folder
+MAX_THREAD_BYTES = 50 * 1024 * 1024  # all bodies of one thread together
 MAX_THREAD_BODY_CHARS = 10_000
 
 
@@ -103,6 +108,7 @@ class FullMessage(BaseModel):
     seen: bool
     flagged: bool
     likely_spam: bool
+    notice: str = MESSAGE_NOTICE
 
 
 class Reply(BaseModel):
@@ -147,6 +153,7 @@ class Thread(BaseModel):
     message_id: str
     messages: list[ThreadMessage]
     complete: bool = Field(description="False if the thread had more messages than were returned.")
+    notice: str = MESSAGE_NOTICE
 
 
 class Updated(BaseModel):
@@ -203,6 +210,14 @@ def _summaries(session: ImapSession, folder: str, uids: list[int]) -> list[Messa
             summary = summarize(uid, folder, parse_message(b""), flags, size, when)
         result.append(summary)
     return result
+
+
+def _metadata_only(info: dict[str, Any]) -> CallToolResult:
+    info["notice"] = MESSAGE_NOTICE
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(info, ensure_ascii=False))],
+        structured_content=info,
+    )
 
 
 def _is_junk(session: ImapSession, folder: str) -> bool:
@@ -335,7 +350,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         def work(session: ImapSession, _: Any) -> FullMessage:
             name = session.resolve(folder)
             raw, flags = session.fetch_raw(
-                name, uid, max_bytes=max(services.max_message_bytes * 2, 25 * 1024 * 1024)
+                name, uid, max_bytes=max(services.max_message_bytes * 2, MAX_FETCH_BYTES)
             )
             message = parse_message(raw)
             text, source = body_text(message)
@@ -384,7 +399,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         def work(session: ImapSession, _: Any) -> CallToolResult:
             name = session.resolve(folder)
             raw, _ = session.fetch_raw(
-                name, uid, max_bytes=max(services.max_message_bytes * 2, 25 * 1024 * 1024)
+                name, uid, max_bytes=max(services.max_message_bytes * 2, MAX_FETCH_BYTES)
             )
             part = find_part(parse_message(raw), part_id)
             data = part_bytes(part)
@@ -399,9 +414,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             spam = _is_junk(session, name)
             if len(data) > MAX_EXTRACT_BYTES:
                 info["note"] = "Larger than 5 MB: only its metadata is returned."
-                return CallToolResult(
-                    content=[TextContent(type="text", text=str(info))], structured_content=info
-                )
+                return _metadata_only(info)
             if mime in IMAGE_TYPES:
                 info["note"] = "Image returned as image content."
                 return CallToolResult(
@@ -426,9 +439,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     "note",
                     "No text can be extracted from this type; only its metadata is returned.",
                 )
-                return CallToolResult(
-                    content=[TextContent(type="text", text=str(info))], structured_content=info
-                )
+                return _metadata_only(info)
             text, truncated = truncate(text, MAX_EXTRACT_CHARS)
             info["truncated"] = truncated
             info["text"] = wrap(text, spam=spam)
@@ -597,42 +608,51 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 if new_ids == ids:
                     break
                 ids = new_ids
-            entries: list[tuple[datetime | None, ThreadMessage]] = []
-            seen_ids: set[str] = set()
-            for folder, uid in list(found)[: MAX_THREAD_MESSAGES * 2]:
-                raw, _ = session.fetch_raw(folder, uid, max_bytes=25 * 1024 * 1024)
+            # Pick the messages from headers first: newest last, one per Message-ID.
+            candidates: dict[str, tuple[float, str, int, int]] = {}
+            for folder in folders:
+                uids = [u for f, u in found if f == folder][:MAX_THREAD_CANDIDATES]
+                for uid, (raw, _flags, size, internal) in session.summaries(
+                    folder, uids, ["Message-ID", "Date"]
+                ).items():
+                    headers = parse_message(raw)
+                    when = message_date(
+                        headers, internal if isinstance(internal, datetime) else None
+                    )
+                    key = header(headers, "Message-ID") or f"{folder}/{uid}"
+                    # The same message in two folders (e.g. sent to yourself): keep one.
+                    candidates.setdefault(key, (when.timestamp() if when else 0, folder, uid, size))
+            chosen = sorted(candidates.values())[-MAX_THREAD_MESSAGES:]
+            messages = []
+            budget = MAX_THREAD_BYTES
+            for _, folder, uid, size in chosen:
+                if size > min(budget, MAX_FETCH_BYTES):
+                    continue  # too large to read for a thread view; read_message can try
+                budget -= size
+                raw, _ = session.fetch_raw(folder, uid, max_bytes=MAX_FETCH_BYTES)
                 message = parse_message(raw)
-                message_id_value = header(message, "Message-ID")
-                if message_id_value and message_id_value in seen_ids:
-                    continue  # the same message in two folders (e.g. sent to yourself)
-                seen_ids.add(message_id_value)
                 text, _source = body_text(message)
                 text, truncated = truncate(text, MAX_THREAD_BODY_CHARS)
                 when = message_date(message)
                 from_ = addresses(message, "From")
-                entries.append(
-                    (
-                        when,
-                        ThreadMessage(
-                            uid=uid,
-                            folder=folder,
-                            message_id=message_id_value or None,
-                            date=when.isoformat() if when else None,
-                            sender=from_[0] if from_ else None,
-                            to=addresses(message, "To"),
-                            subject=header(message, "Subject"),
-                            body=wrap(text, spam=folder == junk),
-                            truncated=truncated,
-                            likely_spam=folder == junk,
-                        ),
+                messages.append(
+                    ThreadMessage(
+                        uid=uid,
+                        folder=folder,
+                        message_id=header(message, "Message-ID") or None,
+                        date=when.isoformat() if when else None,
+                        sender=from_[0] if from_ else None,
+                        to=addresses(message, "To"),
+                        subject=header(message, "Subject"),
+                        body=wrap(text, spam=folder == junk),
+                        truncated=truncated,
+                        likely_spam=folder == junk,
                     )
                 )
-            entries.sort(key=lambda e: e[0].timestamp() if e[0] else 0)
-            messages = [m for _, m in entries]
             return Thread(
                 message_id=mid,
-                messages=messages[:MAX_THREAD_MESSAGES],
-                complete=len(messages) <= MAX_THREAD_MESSAGES,
+                messages=messages,
+                complete=len(messages) == len(candidates),
             )
 
         result: Thread = await with_session(ctx, "get_thread", work)

@@ -14,7 +14,7 @@ from mailcow_mcp.contacts import CardDav, ContactsAuthFailed
 from mailcow_mcp.errors import CredentialsRejected
 from mailcow_mcp.services import Mailbox, Services
 from mailcow_mcp.tools.read import READ_ONLY
-from mailcow_mcp.untrusted import LISTING_NOTICE
+from mailcow_mcp.untrusted import LISTING_NOTICE, SERVER_NOTICE
 
 QUARANTINE_ACTION = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
@@ -45,6 +45,7 @@ class DeliveryStatus(BaseModel):
     message_id: str
     recipients: list[RecipientStatus]
     note: str | None = None
+    notice: str = SERVER_NOTICE
 
 
 class Addresses(BaseModel):

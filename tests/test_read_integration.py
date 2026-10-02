@@ -307,6 +307,35 @@ def test_get_thread(alice: McpSession, mailserver: MailServer) -> None:
     assert bodies == ["Step 1", "Step 2", "Step 3"]
     assert thread["complete"] is True
     assert [m["folder"] for m in thread["messages"]] == ["Sent", "INBOX", "Sent"]
+    assert "untrusted" in thread["notice"]
+
+
+def test_long_thread_keeps_the_newest(alice: McpSession, mailserver: MailServer) -> None:
+    root = f"<{unique()}@example.test>"
+    imap_append(
+        mailserver,
+        "Sent",
+        message(
+            "Long",
+            Message_ID=root,
+            From="alice@example.test",
+            Date="Mon, 01 Jan 2035 08:00:00 +0000",
+        ),
+    )
+    for i in range(32):
+        reply = message(
+            f"Re: Long {i:02}",
+            In_Reply_To=root,
+            References=root,
+            Date=f"Mon, 01 Jan 2035 09:{i:02}:00 +0000",
+        )
+        imap_append(mailserver, "INBOX", reply)
+    thread = alice.call("get_thread", message_id=root)
+    subjects = [m["subject"] for m in thread["messages"]]
+    assert len(subjects) == 30
+    assert subjects[-1] == "Re: Long 31"  # the newest are kept, in date order
+    assert subjects == sorted(subjects)
+    assert thread["complete"] is False
 
 
 def test_mark_and_move(alice: McpSession, mailserver: MailServer) -> None:
@@ -364,6 +393,8 @@ def test_malformed_headers_dont_break_a_listing(alice: McpSession, mailserver: M
     assert listed["total"] == 4
     subjects = sorted(m["subject"] for m in listed["messages"])
     assert subjects == ["broken", "broken", "broken", "still listed"]
-    assert alice.call("read_message", folder=folder, uid=good)["subject"] == "still listed"
+    read = alice.call("read_message", folder=folder, uid=good)
+    assert read["subject"] == "still listed"
+    assert "untrusted" in read["notice"]
     for m in listed["messages"]:
         alice.call("read_message", folder=folder, uid=m["uid"])
