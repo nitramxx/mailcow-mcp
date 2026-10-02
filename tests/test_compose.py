@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from email.message import EmailMessage, Message
 from email.policy import default as default_policy
 
@@ -290,8 +291,9 @@ NAME = "Jan Novák"
 
 
 def _raw_and_parsed(**fields: object) -> tuple[bytes, EmailMessage]:
+    subject = fields.pop("subject_override", SUBJECT)
     composed = compose(
-        build(subject=SUBJECT, from_name=NAME, **fields),
+        build(subject=subject, from_name=NAME, **fields),
         username="jan@firma.cz",
         max_message_bytes=MB,
     )
@@ -419,6 +421,19 @@ class TestHeadersStayIntact:
         raw = composed.as_bytes()
         assert f'filename="{name}"'.encode() in raw
         assert b"filename*0" not in raw
+
+    def test_long_non_ascii_headers_fold_into_short_encoded_words(self) -> None:
+        raw, message = _raw_and_parsed(
+            to=[f"Jméno Příjmení {i} <user{i}@example.org>" for i in range(5)],
+            subject_override=SUBJECT * 8,
+        )
+        head = raw.split(b"\r\n\r\n", 1)[0].decode()
+        words = re.findall(r"=\?[^?]+\?[QqBb]\?[^?]*\?=", head)
+        assert words and max(len(w) for w in words) <= 75  # RFC 2047
+        for line in head.split("\r\n"):
+            if not line.startswith(("Message-ID", "Content-Type", "Content-Disposition")):
+                assert len(line) <= 78, line
+        assert message["Subject"] == SUBJECT * 8
 
     def test_form_feed_doesnt_hide_a_long_line(self) -> None:
         _, message = _raw_and_parsed(body_text="x" * 600 + "\x0c" + "y" * 600)

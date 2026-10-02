@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 from email.headerregistry import Address
 from email.message import EmailMessage
-from email.policy import SMTP
+from email.policy import SMTP, EmailPolicy
 from email.utils import format_datetime, getaddresses, localtime
+from typing import Any
 
 import nh3
 from markdown_it import MarkdownIt
@@ -32,10 +33,29 @@ MAX_NAME_LENGTH = 100
 # Building: content is encoded here, so quoted-printable wraps at 76 (RFC 2045) and nothing is
 # left as 8bit.
 BUILD_POLICY = SMTP.clone(max_line_length=76, cte_type="7bit")
-# Sending: long header lines aren't refolded (folding at 78 would RFC 2047-encode long Message-IDs
-# in In-Reply-To/References and split long filenames into RFC 2231 pieces), and any 8bit part of a
-# stored draft is re-encoded for 7-bit transport.
-POLICY = SMTP.clone(max_line_length=998, cte_type="7bit")
+
+
+class _SendPolicy(EmailPolicy):
+    """Folds headers at 76, except those that must stay intact.
+
+    Folding a long Message-ID (in Message-ID, In-Reply-To, References) RFC 2047-encodes
+    it, and folding Content-Type/-Disposition splits filenames into RFC 2231 pieces:
+    those are only folded at 998. Everything else keeps encoded words within RFC 2047's
+    75 characters.
+    """
+
+    def _fold(self, name: str, value: Any, refold_binary: bool = False) -> str:
+        if name.lower() in _UNFOLDED_HEADERS:
+            wide = self.clone(max_line_length=998)
+            return super(_SendPolicy, wide)._fold(name, value, refold_binary)  # type: ignore[misc,no-any-return]
+        return super()._fold(name, value, refold_binary)  # type: ignore[misc,no-any-return]
+
+
+_UNFOLDED_HEADERS = frozenset(
+    {"message-id", "in-reply-to", "references", "content-type", "content-disposition"}
+)
+# Sending: also re-encodes any 8bit part of a stored draft for 7-bit transport.
+POLICY = _SendPolicy(linesep="\r\n", max_line_length=76, cte_type="7bit")
 
 _FORBIDDEN_IN_HEADERS = re.compile(r"[\r\n\x00]")
 _LOCAL_PART_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,64}$")
