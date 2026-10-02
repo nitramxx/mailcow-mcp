@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import re
 from email.message import EmailMessage, Message
 from email.policy import default as default_policy
@@ -28,6 +27,8 @@ from mailcow_mcp.mime import (
     sniff,
     walk_parts,
 )
+
+from conftest import PNG
 
 MB = 1024 * 1024
 
@@ -211,11 +212,6 @@ class TestRendering:
         monkeypatch.setattr(urllib.request.OpenerDirector, "open", refuse)
         pdf = render_pdf("![x](http://169.254.169.254/latest/meta-data)\n\ntext", None)
         assert pdf.startswith(b"%PDF-")
-
-
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-)
 
 
 class TestMime:

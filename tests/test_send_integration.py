@@ -14,14 +14,10 @@ import pytest
 from mailcow_mcp.imap import ImapSession
 from mailcow_mcp.mime import parse_message, walk_parts
 
-from conftest import Harness, McpSession, ToolFailed, app_config, make_harness
+from conftest import PNG, Harness, McpSession, ToolFailed, app_config, make_harness
 from mailserver_fixture import ALICE, ALICE_ALIAS, BOB, MailServer
 
 pytestmark = pytest.mark.integration
-
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-)
 
 
 @pytest.fixture

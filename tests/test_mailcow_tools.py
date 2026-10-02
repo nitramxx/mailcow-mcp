@@ -19,11 +19,10 @@ from mailcow_mcp.config import generate_key, load_app_config
 from mailcow_mcp.contacts import CardDav, parse_vcards
 from mailcow_mcp.errors import MailError
 
-from conftest import Harness, McpSession, ToolFailed, app_config, make_harness, query_of
-from mailcow_fixtures import BrokerSetup, make_mailcow_harness
+from conftest import Harness, ToolFailed, app_config, make_harness
+from mailcow_fixtures import BrokerSetup, in_app, make_mailcow_harness, mcp_session
 from mailserver_fixture import ALICE, MailServer
 from mock_mailcow import MockMailcow, RunningMailcow
-from test_mailcow_login import in_app, sign_in
 
 CONTACTS = [
     "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:1\r\nFN:Jan Novák\r\nN:Novák;Jan;;;\r\nEMAIL;TYPE=work:jan@firma.cz\r\nORG:Firma s.r.o.\r\nTEL:+420 777 000 000\r\nEND:VCARD\r\n",
@@ -190,14 +189,6 @@ class TestContactsGeneric:
         assert "delivery_status" not in tools and "release_from_quarantine" not in tools
 
 
-def connect(app: Harness, certs: Path) -> McpSession:
-    client_id, response = sign_in(app, certs)
-    assert response.status_code == 303, response.text
-    code = query_of(response.headers["location"])["code"]
-    tokens = app.exchange(client_id, code, app.verifier_value).json()  # type: ignore[attr-defined]
-    return McpSession(app.client, tokens["access_token"])
-
-
 class TestMailcowTools:
     @pytest.fixture
     def app(
@@ -206,7 +197,7 @@ class TestMailcowTools:
         yield from make_mailcow_harness(running_mailcow, certs, broker)
 
     def test_tool_list(self, app: Harness, certs: Path) -> None:
-        session = connect(app, certs)
+        session = mcp_session(app, certs)
         tools = {t["name"]: t for t in session.request("tools/list", {})["tools"]}
         for name in (
             "release_from_quarantine",
@@ -224,7 +215,7 @@ class TestMailcowTools:
         mailcow.aliases = [
             {"id": 1, "address": "sales@example.test", "goto": "alice@example.test", "active": "1"}
         ]
-        result = connect(app, certs).call("my_addresses")
+        result = mcp_session(app, certs).call("my_addresses")
         assert result["mailbox"] == "alice@example.test" and result["aliases"] == [
             "sales@example.test"
         ]
@@ -238,7 +229,7 @@ class TestMailcowTools:
                 "message": "ABCDEF1234: to=<bob@remote.example>, relay=mx[1.1.1.1]:25, dsn=5.1.1, status=bounced (550 5.1.1 No such user)",
             },
         ]
-        session = connect(app, certs)
+        session = mcp_session(app, certs)
         result = session.call("delivery_status", message_id="x1@example.test")
         assert result["recipients"][0]["status"] == "bounced"
         assert result["recipients"][0]["response"] == "550 5.1.1 No such user"
@@ -272,7 +263,7 @@ class TestMailcowTools:
                 "virus_flag": 0,
             },
         ]
-        session = connect(app, certs)
+        session = mcp_session(app, certs)
         with pytest.raises(ToolFailed, match="no such quarantine item"):
             session.call("release_from_quarantine", id=8)
         released = session.call("release_from_quarantine", id=7)
@@ -298,7 +289,7 @@ class TestMailcowTools:
             broker,
             FROM_NAMES="alice@example.test=Alice Nováková; sales@example.test=Sales",
         ):
-            result = connect(app, certs).call("my_addresses")
+            result = mcp_session(app, certs).call("my_addresses")
             assert result["display_names"] == {
                 "alice@example.test": "Alice Nováková",
                 "sales@example.test": "Sales",
@@ -317,7 +308,7 @@ class TestMailcowTools:
     def test_removed_app_password_signs_out(
         self, app: Harness, broker: BrokerSetup, certs: Path
     ) -> None:
-        session = connect(app, certs)
+        session = mcp_session(app, certs)
         capability = app.provider.capability_of(1)
         assert capability is not None
         in_app(app, lambda provider, client: client.deprovision(capability), broker)
@@ -353,7 +344,7 @@ class TestMailcowWithMailServer:
     def test_spam_and_replies_include_quarantine(
         self, app: Harness, mailcow: MockMailcow, mailserver: MailServer, certs: Path
     ) -> None:
-        session = connect(app, certs)
+        session = mcp_session(app, certs)
         sent = session.call(
             "send_email", to=["partner@example.net"], subject="Proposal", body_text="See you?"
         )

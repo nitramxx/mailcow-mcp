@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import ssl
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,63 +25,22 @@ from conftest import (
     pkce_pair,
     query_of,
 )
-from mailcow_fixtures import BrokerSetup, make_mailcow_harness
+from mailcow_fixtures import (
+    BrokerSetup,
+    at_mailcow,
+    connect,
+    in_app,
+    make_mailcow_harness,
+    sign_in,
+    start,
+    state_cookies,
+)
 from mock_mailcow import MockMailcow, RunningMailcow
 
 
 @pytest.fixture
 def app(running_mailcow: RunningMailcow, certs: Path, broker: BrokerSetup) -> Iterator[Harness]:
     yield from make_mailcow_harness(running_mailcow, certs, broker)
-
-
-def at_mailcow(url: str, certs: Path) -> httpx.Response:
-    """The browser visits mailcow's authorize page (the mock signs the user in at once)."""
-    context = ssl.create_default_context(cafile=str(certs / "ca.crt"))
-    context.check_hostname = False
-    with httpx.Client(verify=context) as http:
-        return http.get(url, follow_redirects=False)
-
-
-def start(app: Harness, client_name: str = "Claude") -> tuple[str, str, str]:
-    """Up to the redirect to mailcow; returns (client id, mailcow URL, PKCE verifier)."""
-    client_id = app.register(client_name=client_name)["client_id"]
-    verifier, challenge = pkce_pair()
-    request_id, csrf = app.open_login(app.authorize(client_id, challenge))
-    response = app.client.post(
-        "/login",
-        data={"request": request_id, "csrf": csrf, "action": "mailcow"},
-        follow_redirects=False,
-    )
-    assert response.status_code == 303, response.text
-    return client_id, response.headers["location"], verifier
-
-
-def sign_in(app: Harness, certs: Path, client_name: str = "Claude") -> tuple[str, Any]:
-    """Full mailcow sign-in; returns (client id, callback response)."""
-    client_id, mailcow_url, verifier = start(app, client_name)
-    back = at_mailcow(mailcow_url, certs)
-    assert back.status_code == 302, back.text
-    callback = back.headers["location"].removeprefix(BASE_URL)
-    response = app.client.get(callback, follow_redirects=False)
-    app.verifier_value = verifier  # type: ignore[attr-defined]
-    return client_id, response
-
-
-def connect(app: Harness, certs: Path) -> tuple[str, dict[str, Any]]:
-    client_id, response = sign_in(app, certs)
-    assert response.status_code == 303, response.text
-    params = query_of(response.headers["location"])
-    tokens = app.exchange(client_id, params["code"], app.verifier_value).json()  # type: ignore[attr-defined]
-    return client_id, tokens
-
-
-def state_cookies(app: Harness) -> dict[str, str]:
-    return {k: v for k, v in app.client.cookies.items() if k.startswith("mcp_mailcow_")}
-
-
-def in_app(app: Harness, job: Any, broker: BrokerSetup) -> Any:
-    """Run a background job on the app's event loop (where its HTTP clients live)."""
-    return app.client.portal.call(job, app.provider, broker.client)  # type: ignore[union-attr]
 
 
 def test_healthz_reports_the_broker(app: Harness) -> None:
@@ -128,7 +86,7 @@ def test_redirect_to_mailcow(app: Harness, running_mailcow: RunningMailcow) -> N
 
 
 def test_full_sign_in(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
-    client_id, response = sign_in(app, certs)
+    client_id, response, verifier = sign_in(app, certs)
     assert response.status_code == 303
     assert response.headers["location"].startswith(REDIRECT_URI + "?code=")
     assert state_cookies(app) == {}  # state cookie cleared
@@ -149,7 +107,7 @@ def test_full_sign_in(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
     for token in mailcow.tokens:
         assert token not in dump  # ...and was not stored
     params = query_of(response.headers["location"])
-    tokens = app.exchange(client_id, params["code"], app.verifier_value).json()  # type: ignore[attr-defined]
+    tokens = app.exchange(client_id, params["code"], verifier).json()
     assert app.mcp(tokens["access_token"]).status_code == 200
 
 
@@ -166,7 +124,7 @@ def test_state_must_match_the_cookie(app: Harness, certs: Path) -> None:
 
 def test_declined_at_mailcow(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
     mailcow.deny = True
-    _, response = sign_in(app, certs)
+    response = sign_in(app, certs).response
     assert response.status_code == 400
     assert "cancelled" in response.text
     assert mailcow.app_passwords == []
@@ -174,7 +132,7 @@ def test_declined_at_mailcow(app: Harness, mailcow: MockMailcow, certs: Path) ->
 
 def test_retry_after_a_failed_callback(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
     mailcow.deny = True
-    _, response = sign_in(app, certs)
+    response = sign_in(app, certs).response
     assert response.status_code == 400
     # The error page offers "Sign in with mailcow" again, and it works.
     mailcow.deny = False
@@ -199,7 +157,7 @@ def test_allowed_domains_apply(
     running_mailcow: RunningMailcow, mailcow: MockMailcow, certs: Path, broker: BrokerSetup
 ) -> None:
     for app in make_mailcow_harness(running_mailcow, certs, broker, ALLOWED_DOMAINS="other.test"):
-        _, response = sign_in(app, certs)
+        response = sign_in(app, certs).response
         assert response.status_code == 403
         assert mailcow.app_passwords == []  # created, then deleted again
         assert app.db.one("SELECT count(*) AS n FROM grants")["n"] == 0  # type: ignore[index]
@@ -210,7 +168,7 @@ def test_app_password_that_does_not_work_is_removed(
 ) -> None:
     verifier = FakeVerifier(result=LoginResult.INVALID)
     for app in make_mailcow_harness(running_mailcow, certs, broker, verifier=verifier):
-        _, response = sign_in(app, certs)
+        response = sign_in(app, certs).response
         assert response.status_code == 502
         # It was created and checked, then deleted again (not: never created).
         assert [user for user, _ in verifier.calls] == ["alice@example.test"]
@@ -320,7 +278,7 @@ def test_broker_refusal_during_sign_in(
     app: Harness, mailcow: MockMailcow, certs: Path, broker: BrokerSetup
 ) -> None:
     broker.broker.provision_limit = RateLimiter(0, 3600)
-    _, response = sign_in(app, certs)
+    response = sign_in(app, certs).response
     assert response.status_code == 502
     assert "Signing in with mailcow didn" in response.text
     assert mailcow.app_passwords == []
@@ -337,7 +295,7 @@ def test_broker_unreachable_during_sign_in(
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(broker.client._http, "post", unreachable)
-    _, response = sign_in(app, certs)
+    response = sign_in(app, certs).response
     assert response.status_code == 503
     assert "mailcow can" in response.text
 

@@ -6,6 +6,7 @@ import io
 import json
 import re
 import secrets
+import socket
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -28,6 +29,20 @@ BASE_URL = "http://localhost:8090"
 REDIRECT_URI = "http://127.0.0.1:3333/callback"
 EMAIL = "user@example.org"
 PASSWORD = "correct horse battery staple"
+
+
+# A 1x1 PNG, for attachment tests.
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def free_port() -> int:
+    """A port that was free a moment ago (for servers that must be given a number)."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port: int = s.getsockname()[1]
+        return port
 
 
 def app_config(**overrides: str) -> AppConfig:

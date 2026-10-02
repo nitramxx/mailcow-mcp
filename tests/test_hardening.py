@@ -6,7 +6,6 @@ import base64
 import io
 import json
 import logging
-import socket
 import ssl
 import threading
 import time
@@ -37,8 +36,11 @@ from conftest import (
     McpSession,
     ToolFailed,
     app_config,
+    free_port,
     make_harness,
 )
+
+pytestmark = pytest.mark.anyio
 
 
 class Recorder:
@@ -59,7 +61,7 @@ def smtp_server(certs: Path) -> Iterator[tuple[Controller, Recorder]]:
     controller = Controller(
         recorder,
         hostname="127.0.0.1",
-        port=_free_port(),
+        port=free_port(),
         tls_context=context,
         require_starttls=True,
         auth_exclude_mechanism=["LOGIN", "PLAIN"],  # so AUTH isn't offered at all
@@ -95,7 +97,7 @@ class TestSmtpNeverUnauthenticated:
 
     async def test_plaintext_server_is_refused(self) -> None:
         recorder = Recorder()
-        controller = Controller(recorder, hostname="127.0.0.1", port=_free_port())  # no TLS at all
+        controller = Controller(recorder, hostname="127.0.0.1", port=free_port())  # no TLS at all
         controller.start()
         try:
             config = app_config(
@@ -136,23 +138,8 @@ class TestSmtpNeverUnauthenticated:
         assert recorder.messages == []
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
-pytestmark = pytest.mark.anyio
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port: int = s.getsockname()[1]
-        return port
-
-
 def _serve(trusted: str) -> Iterator[tuple[str, io.StringIO]]:
-    port = _free_port()
+    port = free_port()
     config = app_config(
         PUBLIC_URL=f"http://127.0.0.1:{port}", TRUSTED_PROXIES=trusted, PORT=str(port)
     )

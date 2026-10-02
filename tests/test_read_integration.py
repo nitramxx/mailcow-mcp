@@ -20,14 +20,11 @@ from docx import Document
 
 from mailcow_mcp.compose import render_pdf
 
-from conftest import Harness, McpSession, ToolFailed, app_config, make_harness
+from conftest import PNG, Harness, McpSession, ToolFailed, app_config, make_harness
 from mailserver_fixture import ALICE, BOB, MailServer
 
 pytestmark = pytest.mark.integration
 
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-)
 WRAPPED = re.compile(r"<(untrusted_email_[0-9a-f]{12})>\n(.*)\n</\1>", re.DOTALL)
 
 

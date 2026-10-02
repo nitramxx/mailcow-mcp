@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import io
+import ssl
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 import pytest
@@ -21,7 +22,16 @@ from mailcow_mcp.imap import LoginResult
 from mailcow_mcp.mailcow_login import MailcowOAuth
 from mailcow_mcp.tls import client_context
 
-from conftest import BASE_URL, FakeVerifier, Harness, app_config, make_harness
+from conftest import (
+    BASE_URL,
+    FakeVerifier,
+    Harness,
+    McpSession,
+    app_config,
+    make_harness,
+    pkce_pair,
+    query_of,
+)
 from mailserver_fixture import SERVER_NAME, make_certificates
 from mock_mailcow import API_KEY, CLIENT_ID, CLIENT_SECRET, MockMailcow, RunningMailcow, run_mailcow
 
@@ -130,3 +140,66 @@ def make_mailcow_harness(
         broker=broker.client,
         mailcow_oauth=oauth,
     )
+
+
+# --- signing in with mailcow, as a browser would -----------------------------
+
+
+class SignIn(NamedTuple):
+    client_id: str
+    response: Any  # the app's answer to mailcow's redirect back (a TestClient response)
+    verifier: str  # PKCE, for exchanging the code
+
+
+def at_mailcow(url: str, certs: Path) -> httpx.Response:
+    """The browser visits mailcow's authorize page (the mock signs the user in at once)."""
+    context = ssl.create_default_context(cafile=str(certs / "ca.crt"))
+    context.check_hostname = False
+    with httpx.Client(verify=context) as http:
+        return http.get(url, follow_redirects=False)
+
+
+def start(app: Harness, client_name: str = "Claude") -> tuple[str, str, str]:
+    """Up to the redirect to mailcow; returns (client id, mailcow URL, PKCE verifier)."""
+    client_id = app.register(client_name=client_name)["client_id"]
+    verifier, challenge = pkce_pair()
+    request_id, csrf = app.open_login(app.authorize(client_id, challenge))
+    response = app.client.post(
+        "/login",
+        data={"request": request_id, "csrf": csrf, "action": "mailcow"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    return client_id, response.headers["location"], verifier
+
+
+def sign_in(app: Harness, certs: Path, client_name: str = "Claude") -> SignIn:
+    """A full mailcow sign-in, up to the app's answer to mailcow's redirect back."""
+    client_id, mailcow_url, verifier = start(app, client_name)
+    back = at_mailcow(mailcow_url, certs)
+    assert back.status_code == 302, back.text
+    callback = back.headers["location"].removeprefix(BASE_URL)
+    return SignIn(client_id, app.client.get(callback, follow_redirects=False), verifier)
+
+
+def connect(app: Harness, certs: Path) -> tuple[str, dict[str, Any]]:
+    """Sign in and exchange the code; returns (client id, token response)."""
+    client_id, response, verifier = sign_in(app, certs)
+    assert response.status_code == 303, response.text
+    code = query_of(response.headers["location"])["code"]
+    tokens: dict[str, Any] = app.exchange(client_id, code, verifier).json()
+    return client_id, tokens
+
+
+def mcp_session(app: Harness, certs: Path) -> McpSession:
+    _, tokens = connect(app, certs)
+    return McpSession(app.client, tokens["access_token"])
+
+
+def state_cookies(app: Harness) -> dict[str, str]:
+    return {k: v for k, v in app.client.cookies.items() if k.startswith("mcp_mailcow_")}
+
+
+def in_app(app: Harness, job: Any, broker: BrokerSetup) -> Any:
+    """Run a background job on the app's event loop (where its HTTP clients live)."""
+    return app.client.portal.call(job, app.provider, broker.client)  # type: ignore[union-attr]

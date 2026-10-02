@@ -8,7 +8,6 @@ in on our page) → token exchange with `iss` check → MCP session.
 from __future__ import annotations
 
 import io
-import socket
 import threading
 import time
 from collections.abc import Iterator
@@ -31,21 +30,14 @@ from mailcow_mcp.app import create_app
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.db import Database
 
-from conftest import EMAIL, PASSWORD, FakeVerifier, app_config, form_value, query_of
+from conftest import EMAIL, PASSWORD, FakeVerifier, app_config, form_value, free_port, query_of
 
 REDIRECT = "http://127.0.0.1:1/callback"
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port: int = s.getsockname()[1]
-        return port
-
-
 @pytest.fixture
 def server_url() -> Iterator[str]:
-    port = _free_port()
+    port = free_port()
     base = f"http://127.0.0.1:{port}"
     app = create_app(
         app_config(PUBLIC_URL=base),

@@ -7,11 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Harness, McpSession, ToolFailed, query_of
-from mailcow_fixtures import BrokerSetup, make_mailcow_harness
+from conftest import Harness, ToolFailed
+from mailcow_fixtures import BrokerSetup, make_mailcow_harness, mcp_session
 from mailserver_fixture import MailServer
 from mock_mailcow import MockMailcow, RunningMailcow
-from test_mailcow_login import sign_in
 
 pytestmark = pytest.mark.integration
 
@@ -30,18 +29,10 @@ def app(
     )
 
 
-def connect(app: Harness, certs: Path) -> McpSession:
-    client_id, response = sign_in(app, certs)
-    assert response.status_code == 303, response.text
-    code = query_of(response.headers["location"])["code"]
-    tokens = app.exchange(client_id, code, app.verifier_value).json()  # type: ignore[attr-defined]
-    return McpSession(app.client, tokens["access_token"])
-
-
 def test_app_password_works_and_deleting_it_disconnects(
     app: Harness, mailcow: MockMailcow, certs: Path
 ) -> None:
-    session = connect(app, certs)
+    session = mcp_session(app, certs)
     folders = {f["name"] for f in session.call("list_folders")["folders"]}
     assert {"INBOX", "Sent", "Junk"} <= folders
     sent = session.call(
