@@ -8,10 +8,13 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from importlib import resources
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import anyio
 from mcp.server.auth.handlers.metadata import MetadataHandler, ProtectedResourceMetadataHandler
 from mcp.server.auth.middleware.client_auth import AuthenticationError, ClientAuthenticator
+from mcp.server.auth.provider import construct_redirect_uri
 from mcp.server.auth.routes import build_metadata, cors_middleware
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
@@ -19,6 +22,7 @@ from mcp.server.transport_security import RequestBodyLimitMiddleware, TransportS
 from mcp.shared.auth import OAuthMetadata, ProtectedResourceMetadata
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
@@ -48,6 +52,7 @@ PURGE_INTERVAL_SECONDS = 300
 DEPROVISION_INTERVAL_SECONDS = 60
 RECONCILE_INTERVAL_SECONDS = 3600
 RECONCILE_RETRY_SECONDS = 600
+BROKER_HEALTH_CACHE_SECONDS = 5
 REGISTRATIONS_PER_IP_HOUR = 20
 AUTHORIZATIONS_PER_IP_HOUR = 120
 OAUTH_LIMIT_WINDOW_SECONDS = 3600
@@ -116,6 +121,30 @@ class OAuthLimitMiddleware:
             headers={"Retry-After": str(OAUTH_LIMIT_WINDOW_SECONDS)},
         )
         await response(scope, receive, send)
+
+
+class AuthorizeIssuerMiddleware:
+    """Adds RFC 9207 ``iss`` to /authorize error redirects (the SDK adds it on success only)."""
+
+    def __init__(self, app: ASGIApp, issuer: str) -> None:
+        self.app = app
+        self.issuer = issuer
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] != "/authorize":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_issuer(message: Message) -> None:
+            if message["type"] == "http.response.start" and message["status"] in (302, 303):
+                headers = MutableHeaders(scope=message)
+                location = headers.get("location", "")
+                query = parse_qs(urlsplit(location).query)
+                if "error" in query and "iss" not in query:
+                    headers["location"] = construct_redirect_uri(location, iss=self.issuer)
+            await send(message)
+
+        await self.app(scope, receive, send_with_issuer)
 
 
 class McpCORSMiddleware:
@@ -228,11 +257,9 @@ def _revocation_route(provider: Provider) -> Route:
                 status_code=400,
                 headers=headers,
             )
-        found = await provider.load_access_token(token) or await provider.load_refresh_token(
-            client, token
-        )
-        if found is not None and found.client_id == client.client_id:
-            await provider.revoke_token(found)
+        grant_id = provider.grant_of_token(token, client.client_id)
+        if grant_id is not None:
+            provider.revoke_grant(grant_id, reason="revoked")
         # Unknown tokens get 200 as well (RFC 7009 §2.2).
         return Response(status_code=200, headers=headers)
 
@@ -328,6 +355,12 @@ def create_app(
                         "client_secret_basic",
                     ],
                     "authorization_response_iss_parameter_supported": True,
+                    # /revoke accepts public clients too (RFC 7009 with client_id only).
+                    "revocation_endpoint_auth_methods_supported": [
+                        "none",
+                        "client_secret_post",
+                        "client_secret_basic",
+                    ],
                 }
             )
         ).handle,
@@ -347,6 +380,8 @@ def create_app(
         ["GET", "OPTIONS"],
     )
 
+    broker_health: list[Any] = [0.0, False]  # (next check, reachable)
+
     async def healthz(request: Request) -> Response:
         try:
             db.one("SELECT 1")
@@ -356,7 +391,11 @@ def create_app(
         body: dict[str, str] = {"status": "ok", "role": "app", "version": __version__}
         if broker is not None:
             # Reported, not fatal: the app still serves what it can without the broker.
-            body["broker"] = "ok" if await broker.reachable() else "unreachable"
+            # The page is public: the broker is asked at most every few seconds.
+            if broker_health[0] <= time.monotonic():
+                reachable = await broker.reachable()
+                broker_health[:] = [time.monotonic() + BROKER_HEALTH_CACHE_SECONDS, reachable]
+            body["broker"] = "ok" if broker_health[1] else "unreachable"
         return JSONResponse(body)
 
     async def index(request: Request) -> Response:
@@ -432,6 +471,7 @@ def create_app(
         RateLimiter(REGISTRATIONS_PER_IP_HOUR, OAUTH_LIMIT_WINDOW_SECONDS, clock=clock),
         RateLimiter(AUTHORIZATIONS_PER_IP_HOUR, OAUTH_LIMIT_WINDOW_SECONDS, clock=clock),
     )
+    app = AuthorizeIssuerMiddleware(app, config.public_url)
     app = McpCORSMiddleware(app)
     app = SecurityHeadersMiddleware(app, hsts=config.public_url.startswith("https://"))
     return App(ClientIPMiddleware(app), provider, services)

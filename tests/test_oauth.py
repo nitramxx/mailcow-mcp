@@ -80,6 +80,7 @@ class TestMetadata:
         assert data["code_challenge_methods_supported"] == ["S256"]
         assert "none" in data["token_endpoint_auth_methods_supported"]
         assert data["authorization_response_iss_parameter_supported"] is True
+        assert "none" in data["revocation_endpoint_auth_methods_supported"]
         assert response.headers["access-control-allow-origin"] == "*"
 
 
@@ -128,6 +129,10 @@ class TestRegistration:
         assert clean_client_name("  a\tb  ") == "a b"
         assert clean_client_name("​") is None
         assert clean_client_name("x" * 200) == "x" * 80
+        assert clean_client_name("Cl\u2060au\ufeffde\u061c") == "Claude"
+
+    def test_registration_response_shows_the_cleaned_name(self, harness: Harness) -> None:
+        assert harness.register(client_name="Evil\u202eName")["client_name"] == "EvilName"
 
     def test_confidential_client_secret_is_encrypted(self, harness: Harness) -> None:
         client = harness.register(token_endpoint_auth_method="client_secret_post")
@@ -152,6 +157,13 @@ class TestAuthorize:
         assert location.startswith(REDIRECT_URI)
         assert params["error"] == "invalid_target"
         assert params["state"] == "state-123"
+        assert params["iss"] == BASE_URL  # RFC 9207, on errors too
+
+    def test_resource_with_an_invalid_port_is_refused(self, harness: Harness) -> None:
+        client_id = harness.register()["client_id"]
+        _, challenge = pkce_pair()
+        location = harness.authorize(client_id, challenge, resource="https://x.example:99999/mcp")
+        assert query_of(location)["error"] == "invalid_target"
 
     def test_resource_is_optional(self, harness: Harness) -> None:
         client_id = harness.register()["client_id"]
@@ -189,6 +201,8 @@ class TestAuthorize:
             ("http://127.0.0.1:54321/other", False),
             ("http://localhost:54321/", False),
             ("https://vscode.dev:8443/redirect", False),
+            ("http://evil@127.0.0.1:54321/", False),
+            ("http://127.0.0.1:54321/#fragment", False),
         ]:
             query = {
                 "client_id": client_id,
@@ -558,6 +572,15 @@ class TestTokens:
         assert harness.mcp(tokens["access_token"]).status_code == 401
         assert harness.db.one("SELECT count(*) AS n FROM grants")["n"] == 0  # type: ignore[index]
 
+    def test_revoking_a_rotated_refresh_token_is_not_reuse(self, harness: Harness) -> None:
+        client_id, tokens = harness.tokens()
+        harness.refresh(client_id, tokens["refresh_token"])
+        harness.client.post(
+            "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id}
+        )
+        assert harness.db.one("SELECT count(*) AS n FROM grants")["n"] == 0  # type: ignore[index]
+        assert "refresh_token_reuse" not in harness.audit_stream.getvalue()
+
     def test_garbage_token(self, harness: Harness) -> None:
         assert harness.mcp("mcp_at_nope").status_code == 401
 
@@ -580,6 +603,19 @@ class TestPurge:
         provider.purge_expired()
         for table in ("clients", "grants", "mailboxes", "tokens", "auth_codes"):
             assert harness.db.one(f"SELECT count(*) AS n FROM {table}")["n"] == 0  # type: ignore[index]
+
+    def test_client_that_refreshed_recently_survives_its_grant(self, harness: Harness) -> None:
+        # Signed in long ago, refreshing since: when the connection ends, the client
+        # registration stays a day, so reconnecting with the same client_id works.
+        client_id, tokens = harness.tokens()
+        for _ in range(3):
+            harness.clock.advance(UNUSED_CLIENT_TTL)
+            tokens = harness.refresh(client_id, tokens["refresh_token"]).json()
+        harness.client.post(
+            "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id}
+        )
+        harness.provider.purge_expired()
+        assert harness.db.one("SELECT count(*) AS n FROM clients")["n"] == 1  # type: ignore[index]
 
     def test_abandoned_sign_in_is_cleaned_up(self, harness: Harness) -> None:
         provider = harness.provider

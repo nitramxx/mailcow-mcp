@@ -14,8 +14,8 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
-import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -53,7 +53,9 @@ MAX_CLIENT_NAME_LENGTH = 80
 _LAST_USED_RESOLUTION = 60
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069]")
+# Control, format (zero-width, bidi overrides), separator, private-use and surrogate
+# characters: invisible or misleading in a client name shown on the consent page.
+_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cs"})
 
 # The client IP of the current HTTP request, set by the app's middleware.
 client_ip: contextvars.ContextVar[str | None] = contextvars.ContextVar("client_ip", default=None)
@@ -99,7 +101,8 @@ def _loopback_matches(requested: str, registered: str) -> bool:
     """RFC 8252 §7.3: for loopback redirect URIs, any port matches."""
     a, b = urlsplit(requested), urlsplit(registered)
     return (
-        a.scheme == b.scheme == "http"
+        not (a.fragment or a.username or a.password)
+        and a.scheme == b.scheme == "http"
         and a.hostname in LOOPBACK_HOSTS
         and a.hostname == b.hostname
         and a.path == b.path
@@ -135,7 +138,8 @@ def clean_client_name(name: str | None) -> str | None:
     if not name:
         return None
     spaced = " ".join(name.split())  # tabs and newlines become spaces
-    cleaned = " ".join(_CONTROL_CHARS.sub("", spaced).split())[:MAX_CLIENT_NAME_LENGTH]
+    visible = "".join(c for c in spaced if unicodedata.category(c) not in _HIDDEN_CATEGORIES)
+    cleaned = " ".join(visible.split())[:MAX_CLIENT_NAME_LENGTH]
     return cleaned or None
 
 
@@ -198,7 +202,8 @@ class Provider(
                     "redirect URIs must use https://, or http:// on 127.0.0.1, localhost or [::1]",
                 )
         name = clean_client_name(client_info.client_name)
-        info = client_info.model_copy(update={"client_name": name})
+        client_info.client_name = name  # the registration response shows the cleaned name
+        info = client_info.model_copy()
         metadata = info.model_dump(mode="json", exclude_none=True, exclude={"client_secret"})
         encoded = json.dumps(metadata, separators=(",", ":"))
         if len(encoded) > MAX_CLIENT_METADATA_BYTES:
@@ -227,9 +232,7 @@ class Provider(
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
     ) -> str:
-        if params.resource is not None and canonical_url(params.resource) != canonical_url(
-            self.resource_url
-        ):
+        if params.resource is not None and not self._is_our_resource(params.resource):
             raise AuthorizeError(
                 "invalid_target", f"this server only issues tokens for {self.resource_url}"
             )
@@ -246,6 +249,12 @@ class Provider(
             ),
         )
         return construct_redirect_uri(self.login_url, request=request_id)
+
+    def _is_our_resource(self, resource: str) -> bool:
+        try:
+            return canonical_url(resource) == canonical_url(self.resource_url)
+        except ValueError:  # e.g. an invalid port
+            return False
 
     async def load_pending(self, request_id: str) -> PendingAuthorization | None:
         row = self.db.one(
@@ -428,6 +437,7 @@ class Provider(
     def _issue_tokens(self, grant_id: int, scopes: list[str]) -> OAuthToken:
         now = self.now()
         access, refresh = new_secret("mcp_at_"), new_secret("mcp_rt_")
+        self._client_used(grant_id, now)
         self.db.execute(
             "INSERT INTO tokens (token_hash, grant_id, kind, expires_at) VALUES"
             " (?, ?, 'access', ?), (?, ?, 'refresh', ?)",
@@ -519,6 +529,25 @@ class Provider(
     async def revoke_token(self, token: MailboxAccessToken | GrantRefreshToken) -> None:
         self.revoke_grant(token.grant_id, reason="revoked")
 
+    def grant_of_token(self, token: str, client_id: str) -> int | None:
+        """The grant a token (access or refresh, current or rotated) belongs to, for
+        revocation: without the side effects of loading it for use."""
+        row = self.db.one(
+            "SELECT t.grant_id FROM tokens t JOIN grants g ON g.id = t.grant_id"
+            " WHERE t.token_hash = ? AND g.client_id = ?",
+            (hash_secret(token), client_id),
+        )
+        return int(row["grant_id"]) if row else None
+
+    def _client_used(self, grant_id: int, now: int) -> None:
+        # Keeps a client registration alive while it refreshes, and for a day after its
+        # last connection ends (so a reconnect with the same client_id still works).
+        self.db.execute(
+            "UPDATE clients SET last_used_at = ?"
+            " WHERE client_id = (SELECT client_id FROM grants WHERE id = ?)",
+            (now, grant_id),
+        )
+
     # --- grants and cleanup --------------------------------------------------
 
     def _grant_info(self, grant_id: int) -> tuple[str | None, str | None]:
@@ -534,6 +563,7 @@ class Provider(
         mailbox, client = self._grant_info(grant_id)
         if mailbox is None:
             return
+        self._client_used(grant_id, self.now())
         with self.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO deprovision_queue (mailbox, capability_enc, queued_at)"
