@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import imaplib
+import io
 import json
 import socket
 import ssl
+import zipfile
 from pathlib import Path
 
 import aiosmtplib
@@ -16,7 +18,13 @@ from mailcow_mcp.errors import CredentialsRejected, ServerUnavailable
 from mailcow_mcp.i18n import Translator, messages, pick_language
 from mailcow_mcp.imap import login_rejected
 from mailcow_mcp.login import normalize_email
-from mailcow_mcp.messages import summarize
+from mailcow_mcp.messages import (
+    DOCX,
+    MAX_DOCX_UNCOMPRESSED_BYTES,
+    ExtractionError,
+    extract_text,
+    summarize,
+)
 from mailcow_mcp.mime import parse_message
 from mailcow_mcp.ratelimit import RateLimiter, client_key
 from mailcow_mcp.smtp import auth_error
@@ -214,3 +222,30 @@ def test_rate_limiter_checks_dont_store_keys() -> None:
     limiter = RateLimiter(1, 60)
     assert all(limiter.allowed(f"user{i}") for i in range(100))
     assert limiter._events == {}
+
+
+def _zip(**files: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(name.replace("__", "/").replace("_xml", ".xml"), content)
+    return buffer.getvalue()
+
+
+def test_docx_zip_bomb_is_refused() -> None:
+    bomb = _zip(word__document_xml=b"\0" * (MAX_DOCX_UNCOMPRESSED_BYTES + 1))
+    assert len(bomb) < 1024 * 1024
+    with pytest.raises(ExtractionError, match="too large"):
+        extract_text(bomb, DOCX, "a.docx", None)
+
+
+def test_broken_files_are_extraction_errors() -> None:
+    broken_docx = _zip(**{"[Content_Types]_xml": b"<not xml"})
+    with pytest.raises(ExtractionError):
+        extract_text(broken_docx, DOCX, "a.docx", None)
+    with pytest.raises(ExtractionError):
+        extract_text(b"%PDF-1.4 garbage", "application/pdf", "a.pdf", None)
+
+
+def test_text_with_a_codec_that_isnt_a_charset() -> None:
+    assert extract_text(b"hello", "text/plain", "a.txt", "idna") == "hello"

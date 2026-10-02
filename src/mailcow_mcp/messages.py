@@ -36,6 +36,7 @@ MAX_BODY_CHARS = 100_000
 MAX_EXTRACT_CHARS = 50_000
 MAX_EXTRACT_BYTES = 5 * 1024 * 1024
 MAX_PDF_PAGES = 200
+MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024  # a 5 MB zip can inflate to gigabytes
 # Summaries are listed by the dozen: a sender can't make one huge.
 MAX_SUMMARY_SUBJECT_CHARS = 1000
 MAX_SUMMARY_ADDRESSES = 100
@@ -259,10 +260,15 @@ class ExtractionError(Exception):
 def extract_text(data: bytes, mime_type: str, filename: str, charset: str | None) -> str | None:
     """Text of a PDF, DOCX or text-like attachment; None if the type isn't supported."""
     name = filename.lower()
-    if mime_type == "application/pdf" or name.endswith(".pdf"):
-        return _pdf_text(data)
-    if mime_type == DOCX or name.endswith(".docx"):
-        return _docx_text(data)
+    try:
+        if mime_type == "application/pdf" or name.endswith(".pdf"):
+            return _pdf_text(data)
+        if mime_type == DOCX or name.endswith(".docx"):
+            return _docx_text(data)
+    except ExtractionError:
+        raise
+    except Exception as exc:  # the parsers raise all kinds of errors on broken files
+        raise ExtractionError("The file can't be read.") from exc
     if (
         mime_type.startswith("text/")
         or mime_type in TEXT_TYPES
@@ -270,11 +276,12 @@ def extract_text(data: bytes, mime_type: str, filename: str, charset: str | None
             (".txt", ".csv", ".md", ".json", ".xml", ".log", ".ics", ".vcf", ".yaml", ".yml")
         )
     ):
-        text = (
-            data.decode(charset or "utf-8", "replace")
-            if _known(charset)
-            else data.decode("utf-8", "replace")
-        )
+        try:
+            text = data.decode(charset or "utf-8", "replace") if _known(charset) else None
+        except UnicodeError:  # e.g. "idna": a codec, but not a text encoding
+            text = None
+        if text is None:
+            text = data.decode("utf-8", "replace")
         if mime_type == "text/html" or name.endswith((".html", ".htm")):
             return html_to_text(text)
         return text
@@ -315,6 +322,10 @@ def _docx_text(data: bytes) -> str:
     from docx import Document
 
     try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            inflated = sum(info.file_size for info in archive.infolist())
+        if inflated > MAX_DOCX_UNCOMPRESSED_BYTES:
+            raise ExtractionError("The DOCX file is too large to read.")
         document = Document(io.BytesIO(data))
     except (zipfile.BadZipFile, KeyError, ValueError) as exc:
         raise ExtractionError("The DOCX file can't be read.") from exc

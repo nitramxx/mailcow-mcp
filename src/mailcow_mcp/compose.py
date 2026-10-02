@@ -24,6 +24,8 @@ from mailcow_mcp.mime import check_attachment, safe_filename
 MAX_RECIPIENTS = 50
 MAX_ATTACHMENTS = 10
 MAX_BODY_CHARS = 1_000_000
+MAX_PDF_MARKDOWN_CHARS = 200_000  # per PDF; rendering is the expensive part
+MAX_PDF_MARKDOWN_TOTAL = 500_000  # all PDFs of one message
 MAX_SUBJECT_LENGTH = 500
 MAX_NAME_LENGTH = 100
 
@@ -70,7 +72,9 @@ class ForwardedAttachment(_Strict):
 
 class PdfSpec(_Strict):
     filename: str = Field(max_length=255)
-    markdown: str = Field(max_length=MAX_BODY_CHARS, description="Document content in Markdown.")
+    markdown: str = Field(
+        max_length=MAX_PDF_MARKDOWN_CHARS, description="Document content in Markdown."
+    )
     title: str | None = Field(default=None, max_length=MAX_SUBJECT_LENGTH)
 
 

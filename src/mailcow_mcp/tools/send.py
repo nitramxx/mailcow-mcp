@@ -11,6 +11,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from mailcow_mcp.compose import (
+    MAX_PDF_MARKDOWN_TOTAL,
     POLICY,
     Attachment,
     FileAttachment,
@@ -91,6 +92,11 @@ def _references(session: ImapSession, message_id: str) -> list[str]:
 def _collect_attachments(
     session: ImapSession | None, specs: list[Attachment], max_bytes: int
 ) -> list[FileAttachment]:
+    pdf_chars = sum(len(s.render_pdf.markdown) for s in specs if isinstance(s, RenderedPdf))
+    if pdf_chars > MAX_PDF_MARKDOWN_TOTAL:
+        raise LimitExceeded(
+            f"At most {MAX_PDF_MARKDOWN_TOTAL:,} characters of Markdown for all PDFs of a message."
+        )
     files: list[FileAttachment] = []
     for spec in specs:
         if isinstance(spec, InlineAttachment):
