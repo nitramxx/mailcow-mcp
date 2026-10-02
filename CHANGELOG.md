@@ -7,6 +7,50 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
+Fixes from a full code review (CODE_REVIEW.md).
+
+### Security
+
+- The sign-in form only works in the browser that loaded it (its token is derived from a
+  SameSite cookie), and posts with `Origin: null` are refused: a sign-in request started
+  elsewhere could be posted from a victim's browser, skipping the consent page.
+- Every piece of email content a tool returns is marked untrusted, also subjects, names,
+  addresses and attachment filenames in `read_message`, `get_thread` and `get_attachment`.
+- Rate limits: failed passwords are counted before they're checked (parallel guesses),
+  `/authorize` is limited, IPv6 clients are limited per /64.
+- Limits on resources: thread bodies (50 MB together), DOCX inflation (50 MB), Markdown for
+  PDFs (200,000 characters each, 500,000 per message), CardDAV answers, chunked registrations.
+- CardDAV credentials are never sent to another host named in the server's answers.
+
+### Fixed
+
+- A temporary IMAP or SMTP authentication failure (e.g. Dovecot's `[UNAVAILABLE]`, SMTP 454)
+  no longer signs the connection out and deletes its app password.
+- `find_contacts` works through `MAILCOW_INTERNAL_URL` (the mailcow kit's default).
+- A message with a malformed header no longer breaks the whole listing.
+- Broker: reconcile deletes nothing when most capabilities don't verify (e.g. a changed
+  `BROKER_SIGNING_KEY`), works with any number of connections, and locks one mailbox at a
+  time; a failed sign-in no longer leaves an app password behind.
+- A sent message is never reported as an error: problems saving the Sent copy are a note, and
+  `send_draft` keeps the draft if no copy reached Sent. Send limits count before sending.
+- Long non-ASCII subjects and names are folded into RFC 2047 encoded words of at most 75
+  characters again (Message-ID and filename headers stay unfolded).
+- `get_thread` returns the newest 30 messages by date across folders.
+- Servers without UIDPLUS: no unrelated messages are expunged.
+- Clients that refreshed recently stay registered after their connection ends.
+- Two "Sign in with mailcow" tabs at once both work.
+- Database migrations can't run twice at once; an older image refuses a newer database.
+- `audit.log` rotates at 10 MB.
+- `setup-mailcow.sh`: consistent `BROKER_SHARED_SECRET`, a clear error for a changed hostname,
+  nginx's upload limit from `MAX_MESSAGE_MB`, nginx reloaded instead of restarted, passwords
+  not on command lines, DNS checks without `/etc/hosts`, and more robust `update`.
+
+### Changed
+
+- `BROKER_URL` defaults to `http://mcp-broker:8091`, the name the kits use.
+- The kits set memory, process and `/tmp` limits; HSTS comes from the app only.
+- Releases stay drafts until their images are pushed; kit archives are reproducible.
+
 ## [0.1.5] - 2026-10-02
 
 ### Fixed
