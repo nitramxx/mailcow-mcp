@@ -107,10 +107,11 @@ class ImapSession:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        try:
-            self.client.logout()
-        except (OSError, IMAPClientError):
-            self.client.shutdown()
+        self.close()
+
+    def close(self) -> None:
+        """Log out (blocking; call from a worker thread)."""
+        _close(self.client)
 
     # --- folders -------------------------------------------------------------
 
@@ -360,6 +361,15 @@ class ImapConnector:
             log.warning("IMAP login on %s:%d failed: %s", self.host, self.port, exc)
             raise ServerUnavailable() from exc
         return ImapSession(client, self.folder_names)
+
+
+def or_headers(field_values: Sequence[tuple[str, str]]) -> list[Any]:
+    """Search criteria matching any of these header values (IMAP: OR a OR b c)."""
+    keys = [["HEADER", name, value] for name, value in field_values]
+    criteria: list[Any] = keys[-1]
+    for key in reversed(keys[:-1]):
+        criteria = ["OR", *key, *criteria]
+    return criteria
 
 
 def login_rejected(exc: LoginError) -> bool:

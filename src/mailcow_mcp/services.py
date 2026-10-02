@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+import anyio
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.mcpserver import Context
@@ -22,7 +23,7 @@ from mailcow_mcp.contacts import CardDav
 from mailcow_mcp.crypto import Box
 from mailcow_mcp.db import Database
 from mailcow_mcp.errors import CredentialsRejected, LimitExceeded, MailError
-from mailcow_mcp.imap import ImapConnector
+from mailcow_mcp.imap import ImapConnector, ImapSession
 from mailcow_mcp.oauth import MailboxAccessToken, Provider
 from mailcow_mcp.smtp import SmtpSender
 
@@ -149,6 +150,15 @@ class Services:
             password=self.box.decrypt(row["credential_enc"]),
             client_name=row["client_name"],
         )
+
+    async def run_imap[T](self, mailbox: Mailbox, work: Callable[[ImapSession], T]) -> T:
+        """Run ``work`` in a worker thread with an IMAP session, logged out afterwards."""
+
+        def run() -> T:
+            with self.imap.connect(mailbox.username, mailbox.password) as session:
+                return work(session)
+
+        return await anyio.to_thread.run_sync(run)
 
     async def broker_call(self, mailbox: Mailbox, operation: str, **body: Any) -> dict[str, Any]:
         """A broker operation for this mailbox (mailcow sign-in connections only)."""

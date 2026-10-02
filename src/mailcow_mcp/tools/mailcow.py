@@ -12,8 +12,8 @@ from mailcow_mcp.compose import default_from_name, normalize_message_id
 from mailcow_mcp.config import Mode
 from mailcow_mcp.contacts import CardDav, ContactsAuthFailed
 from mailcow_mcp.errors import CredentialsRejected
-from mailcow_mcp.services import Mailbox, Services
-from mailcow_mcp.tools.read import READ_ONLY
+from mailcow_mcp.services import Services
+from mailcow_mcp.tools.common import READ_ONLY
 from mailcow_mcp.untrusted import LISTING_NOTICE, SERVER_NOTICE
 
 QUARANTINE_ACTION = ToolAnnotations(
@@ -72,11 +72,6 @@ class Contacts(BaseModel):
     query: str
     contacts: list[ContactResult]
     notice: str = LISTING_NOTICE
-
-
-async def quarantine_items(services: Services, mailbox: Mailbox) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = (await services.broker_call(mailbox, "quarantine_list"))["items"]
-    return items
 
 
 def register(mcp: MCPServer[Any], services: Services) -> None:

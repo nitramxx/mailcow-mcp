@@ -4,18 +4,15 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from mailcow_mcp.broker_client import RevokedCapability
 from mailcow_mcp.config import Mode
-from mailcow_mcp.errors import MailError, NotFound
 from mailcow_mcp.imap import ImapSession
 from mailcow_mcp.messages import iso_timestamp
 from mailcow_mcp.services import Services
-from mailcow_mcp.tools.read import READ_ONLY, Moved, _summaries, training_note
+from mailcow_mcp.tools.common import MAX_UIDS, READ_ONLY, Moved, move, quarantine, summaries
 from mailcow_mcp.untrusted import LISTING_NOTICE, SPAM_NOTICE
 
 
@@ -54,7 +51,7 @@ def junk_items(session: ImapSession, limit: int) -> tuple[str | None, list[SpamI
             spam_score=s.spam_score,
             message_id=s.message_id,
         )
-        for s in _summaries(session, junk, uids)
+        for s in summaries(session, junk, uids)
     ]
 
 
@@ -73,21 +70,12 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         ctx: Context[Any, Any], limit: Annotated[int, Field(ge=1, le=50)] = 20
     ) -> SpamList:
         async with services.tool(ctx, "list_spam") as mailbox:
-
-            def work() -> tuple[str | None, list[SpamItem]]:
-                with services.imap.connect(mailbox.username, mailbox.password) as session:
-                    return junk_items(session, limit)
-
-            junk, items = await anyio.to_thread.run_sync(work)
+            junk, items = await services.run_imap(mailbox, lambda s: junk_items(s, limit))
             note = None
             if services.config.mode is Mode.MAILCOW:
-                try:
-                    quarantined = (await services.broker_call(mailbox, "quarantine_list"))["items"]
-                except RevokedCapability:
-                    raise  # signs the connection out
-                except MailError as exc:
-                    note = f"Quarantine not included: {exc}"
-                    quarantined = []
+                quarantined, problem = await quarantine(services, mailbox)
+                if problem:
+                    note = f"Quarantine not included: {problem}"
                 items += [
                     SpamItem(
                         location="quarantine",
@@ -124,28 +112,16 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     async def rescue_from_junk(
         ctx: Context[Any, Any],
         uids: Annotated[
-            list[int], Field(min_length=1, max_length=100, description="UIDs in the Junk folder.")
+            list[int],
+            Field(min_length=1, max_length=MAX_UIDS, description="UIDs in the Junk folder."),
         ],
     ) -> Moved:
         async with services.tool(ctx, "rescue_from_junk") as mailbox:
 
-            def work() -> Moved:
-                with services.imap.connect(mailbox.username, mailbox.password) as session:
-                    junk = session.folder("junk")
-                    if junk is None:
-                        raise NotFound("This mailbox has no Junk folder.")
-                    present = session.existing(junk, uids)
-                    if present:
-                        session.move(junk, present, "INBOX")
-                    return Moved(
-                        from_folder=junk,
-                        to_folder="INBOX",
-                        moved=present,
-                        not_found=sorted(set(uids) - set(present)),
-                        note=training_note(services, session, junk, "INBOX"),
-                    )
+            def work(session: ImapSession) -> Moved:
+                return move(services, session, session.require_folder("junk"), uids, "INBOX")
 
-            result = await anyio.to_thread.run_sync(work)
+            result = await services.run_imap(mailbox, work)
             services.audit(
                 "rescue_from_junk",
                 mailbox=mailbox.username,

@@ -12,20 +12,18 @@ from typing import Annotated, Any
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
+from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import BaseModel, Field
 
-from mailcow_mcp.broker_client import RevokedCapability
 from mailcow_mcp.compose import normalize_message_id
 from mailcow_mcp.config import Mode
-from mailcow_mcp.errors import InvalidInput, MailError
-from mailcow_mcp.imap import FLAGGED, SEEN, ImapSession
+from mailcow_mcp.errors import InvalidInput
+from mailcow_mcp.imap import FLAGGED, SEEN, ImapSession, or_headers
 from mailcow_mcp.messages import (
     IMAGE_TYPES,
     MAX_BODY_CHARS,
     MAX_EXTRACT_BYTES,
     MAX_EXTRACT_CHARS,
-    SUMMARY_HEADERS,
     AttachmentInfo,
     ExtractionError,
     MessageSummary,
@@ -38,38 +36,31 @@ from mailcow_mcp.messages import (
     iso_timestamp,
     message_date,
     parse_day,
-    summarize,
     truncate,
 )
 from mailcow_mcp.mime import find_part, parse_message, part_bytes, safe_filename
 from mailcow_mcp.services import Services
+from mailcow_mcp.threads import ThreadMessage, find_thread
+from mailcow_mcp.tools.common import (
+    CHANGES_FLAGS,
+    READ_ONLY,
+    FolderName,
+    Moved,
+    Uids,
+    move,
+    quarantine,
+    summaries,
+    with_session,
+)
 from mailcow_mcp.untrusted import LISTING_NOTICE, MESSAGE_NOTICE, wrap
 
 log = logging.getLogger(__name__)
 
-READ_ONLY = ToolAnnotations(
-    read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
-)
-CHANGES_FLAGS = ToolAnnotations(
-    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
-)
-
-Folder = Annotated[
-    str,
-    Field(
-        max_length=500,
-        description='Folder name from list_folders, or a role: "inbox", "sent", "drafts", "junk", "trash", "archive".',
-    ),
-]
-Uids = Annotated[
-    list[int], Field(min_length=1, max_length=100, description="Message UIDs in the folder.")
-]
 # Largest message read at all (at least twice what may be sent).
 MAX_FETCH_BYTES = 25 * 1024 * 1024
-MAX_THREAD_MESSAGES = 30
-MAX_THREAD_CANDIDATES = 500  # per folder
-MAX_THREAD_BYTES = 50 * 1024 * 1024  # all bodies of one thread together
-MAX_THREAD_BODY_CHARS = 10_000
+MAX_FOLDERS = 200
+MAX_REPLY_CANDIDATES = 50  # per folder
+QUARANTINE_CLOCK_SKEW_SECONDS = 3600
 
 
 class FolderInfo(BaseModel):
@@ -137,19 +128,6 @@ class ReplyList(BaseModel):
     notice: str = LISTING_NOTICE
 
 
-class ThreadMessage(BaseModel):
-    uid: int
-    folder: str
-    message_id: str | None
-    date: str | None
-    sender: str | None
-    to: list[str]
-    subject: str
-    body: str
-    truncated: bool
-    likely_spam: bool
-
-
 class Thread(BaseModel):
     message_id: str
     messages: list[ThreadMessage]
@@ -161,14 +139,6 @@ class Updated(BaseModel):
     folder: str
     updated: list[int]
     not_found: list[int]
-
-
-class Moved(BaseModel):
-    from_folder: str
-    to_folder: str
-    moved: list[int]
-    not_found: list[int]
-    note: str | None = None
 
 
 def _criteria(
@@ -196,23 +166,6 @@ def _criteria(
     return criteria
 
 
-def _summaries(session: ImapSession, folder: str, uids: list[int]) -> list[MessageSummary]:
-    fetched = session.summaries(folder, uids, SUMMARY_HEADERS)
-    result = []
-    for uid in uids:
-        if uid not in fetched:
-            continue
-        raw, flags, size, internal = fetched[uid]
-        when = internal if isinstance(internal, datetime) else None
-        try:
-            summary = summarize(uid, folder, parse_message(raw), flags, size, when)
-        except Exception:  # one broken message mustn't hide the others
-            log.warning("could not summarize message %d in a folder", uid, exc_info=True)
-            summary = summarize(uid, folder, parse_message(b""), flags, size, when)
-        result.append(summary)
-    return result
-
-
 def _metadata_only(info: dict[str, Any]) -> CallToolResult:
     info["notice"] = MESSAGE_NOTICE
     return CallToolResult(
@@ -225,27 +178,7 @@ def _is_junk(session: ImapSession, folder: str) -> bool:
     return folder == session.folder("junk")
 
 
-def _or_search(field_values: list[tuple[str, str]]) -> list[Any]:
-    """IMAP OR over HEADER criteria: OR a OR b c."""
-    keys = [["HEADER", name, value] for name, value in field_values]
-    criteria: list[Any] = keys[-1]
-    for key in reversed(keys[:-1]):
-        criteria = ["OR", *key, *criteria]
-    return criteria
-
-
 def register(mcp: MCPServer[Any], services: Services) -> None:
-    async def with_session(ctx: Context[Any, Any], name: str, work: Any) -> Any:
-        async with services.tool(ctx, name) as mailbox:
-
-            def run() -> Any:
-                with services.imap.connect(mailbox.username, mailbox.password) as session:
-                    return work(session, mailbox)
-
-            result = await anyio.to_thread.run_sync(run)
-            services.audit(name, mailbox=mailbox.username, client=mailbox.client_name)
-            return result
-
     @mcp.tool(
         name="list_folders",
         title="List folders",
@@ -253,9 +186,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def list_folders(ctx: Context[Any, Any]) -> FolderList:
-        def work(session: ImapSession, _: Any) -> FolderList:
+        def work(session: ImapSession) -> FolderList:
             folders = []
-            for folder in session.folders()[:200]:
+            for folder in session.folders()[:MAX_FOLDERS]:
                 if not folder.selectable:
                     continue
                 total, unseen = session.status(folder.name)
@@ -270,8 +203,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                         info.special_use = role
             return FolderList(folders=folders)
 
-        result: FolderList = await with_session(ctx, "list_folders", work)
-        return result
+        return await with_session(services, ctx, "list_folders", work)
 
     @mcp.tool(
         name="list_messages",
@@ -281,25 +213,24 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def list_messages(
         ctx: Context[Any, Any],
-        folder: Folder = "INBOX",
+        folder: FolderName = "INBOX",
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
         unread_only: bool = False,
         since: Annotated[
             str | None, Field(description="Only messages since this date (YYYY-MM-DD).")
         ] = None,
     ) -> MessageList:
-        def work(session: ImapSession, _: Any) -> MessageList:
+        def work(session: ImapSession) -> MessageList:
             name = session.resolve(folder)
             uids = session.search(
                 name, _criteria(unread_only=unread_only, since=parse_day(since, "since"))
             )
             newest = list(reversed(uids))[:limit]
             return MessageList(
-                folder=name, total=len(uids), messages=_summaries(session, name, newest)
+                folder=name, total=len(uids), messages=summaries(session, name, newest)
             )
 
-        result: MessageList = await with_session(ctx, "list_messages", work)
-        return result
+        return await with_session(services, ctx, "list_messages", work)
 
     @mcp.tool(
         name="search_messages",
@@ -309,7 +240,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def search_messages(
         ctx: Context[Any, Any],
-        folder: Folder = "INBOX",
+        folder: FolderName = "INBOX",
         sender: Annotated[
             str | None, Field(description="Part of the From address or name.")
         ] = None,
@@ -320,7 +251,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         before: Annotated[str | None, Field(description="YYYY-MM-DD")] = None,
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
     ) -> MessageList:
-        def work(session: ImapSession, _: Any) -> MessageList:
+        def work(session: ImapSession) -> MessageList:
             name = session.resolve(folder)
             criteria = _criteria(
                 since=parse_day(since, "since"),
@@ -333,11 +264,10 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             uids = session.search(name, criteria)
             newest = list(reversed(uids))[:limit]
             return MessageList(
-                folder=name, total=len(uids), messages=_summaries(session, name, newest)
+                folder=name, total=len(uids), messages=summaries(session, name, newest)
             )
 
-        result: MessageList = await with_session(ctx, "search_messages", work)
-        return result
+        return await with_session(services, ctx, "search_messages", work)
 
     @mcp.tool(
         name="read_message",
@@ -346,9 +276,9 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         annotations=READ_ONLY,
     )
     async def read_message(
-        ctx: Context[Any, Any], folder: Folder, uid: Annotated[int, Field(gt=0)]
+        ctx: Context[Any, Any], folder: FolderName, uid: Annotated[int, Field(gt=0)]
     ) -> FullMessage:
-        def work(session: ImapSession, _: Any) -> FullMessage:
+        def work(session: ImapSession) -> FullMessage:
             name = session.resolve(folder)
             raw, flags = session.fetch_raw(
                 name, uid, max_bytes=max(services.max_message_bytes * 2, MAX_FETCH_BYTES)
@@ -380,8 +310,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 likely_spam=spam,
             )
 
-        result: FullMessage = await with_session(ctx, "read_message", work)
-        return result
+        return await with_session(services, ctx, "read_message", work)
 
     @mcp.tool(
         name="get_attachment",
@@ -391,13 +320,13 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def get_attachment(
         ctx: Context[Any, Any],
-        folder: Folder,
+        folder: FolderName,
         uid: Annotated[int, Field(gt=0)],
         part_id: Annotated[
             str, Field(max_length=50, description="From read_message's attachment list.")
         ],
     ) -> CallToolResult:
-        def work(session: ImapSession, _: Any) -> CallToolResult:
+        def work(session: ImapSession) -> CallToolResult:
             name = session.resolve(folder)
             raw, _ = session.fetch_raw(
                 name, uid, max_bytes=max(services.max_message_bytes * 2, MAX_FETCH_BYTES)
@@ -448,8 +377,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 content=[TextContent(type="text", text=info["text"])], structured_content=info
             )
 
-        result: CallToolResult = await with_session(ctx, "get_attachment", work)
-        return result
+        return await with_session(services, ctx, "get_attachment", work)
 
     @mcp.tool(
         name="find_replies",
@@ -479,9 +407,11 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                     replies: list[Reply] = []
                     for where, name in places:
                         uids = session.search(
-                            name, _or_search([("In-Reply-To", mid), ("References", mid)])
+                            name, or_headers([("In-Reply-To", mid), ("References", mid)])
                         )
-                        for s in _summaries(session, name, list(reversed(uids))[:50]):
+                        for s in summaries(
+                            session, name, list(reversed(uids))[:MAX_REPLY_CANDIDATES]
+                        ):
                             if s.message_id == mid:
                                 continue
                             replies.append(
@@ -528,37 +458,12 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                         "checked (it's matched by the original recipients)."
                     )
                 else:
-                    try:
-                        items = (await services.broker_call(mailbox, "quarantine_list"))["items"]
-                    except RevokedCapability:
-                        raise  # signs the connection out
-                    except MailError as exc:
-                        result.note = f"Quarantine not checked: {exc}"
-                        items = []
+                    items, problem = await quarantine(services, mailbox)
+                    if problem:
+                        result.note = f"Quarantine not checked: {problem}"
                     else:
                         result.searched.append("quarantine")
-                    earliest = sent_at.timestamp() - 3600  # clock skew
-                    for item in items:
-                        created = (
-                            datetime.fromisoformat(item["created"]) if item.get("created") else None
-                        )
-                        if (
-                            item.get("sender", "").lower() in recipients
-                            and created
-                            and created.timestamp() >= earliest
-                        ):
-                            result.replies.append(
-                                Reply(
-                                    found_in="quarantine",
-                                    quarantine_id=item["id"],
-                                    date=item["created"],
-                                    sender=item["sender"],
-                                    subject=item["subject"],
-                                    spam_score=item.get("score"),
-                                    likely_spam=True,
-                                    possible_reply=True,
-                                )
-                            )
+                    result.replies += quarantine_replies(items, recipients, sent_at)
             result.replies.sort(key=lambda r: iso_timestamp(r.date))
             services.audit(
                 "find_replies",
@@ -577,89 +482,12 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     async def get_thread(
         ctx: Context[Any, Any], message_id: Annotated[str, Field(max_length=998)]
     ) -> Thread:
-        def work(session: ImapSession, _: Any) -> Thread:
+        def work(session: ImapSession) -> Thread:
             mid = normalize_message_id(message_id)
-            folders = ["INBOX"] + [
-                f for f in (session.folder(r) for r in ("sent", "junk", "archive")) if f
-            ]
-            junk = session.folder("junk")
-            ids = {mid}
-            found: dict[tuple[str, int], None] = {}
-            for _round in range(2):
-                for folder in folders:
-                    searches = []
-                    for value in sorted(ids)[:20]:
-                        searches += [
-                            ("Message-ID", value),
-                            ("References", value),
-                            ("In-Reply-To", value),
-                        ]
-                    for uid in session.search(folder, _or_search(searches)):
-                        found[(folder, uid)] = None
-                # Ancestors: what the found messages reference.
-                new_ids = set(ids)
-                for folder in folders:
-                    uids = [u for f, u in found if f == folder]
-                    for raw in session.headers(
-                        folder, uids, ["Message-ID", "References", "In-Reply-To"]
-                    ).values():
-                        headers = parse_message(raw)
-                        for name in ("Message-ID", "In-Reply-To"):
-                            if value := header(headers, name):
-                                new_ids.add(value)
-                        new_ids.update(header(headers, "References").split())
-                if new_ids == ids:
-                    break
-                ids = new_ids
-            # Pick the messages from headers first: newest last, one per Message-ID.
-            candidates: dict[str, tuple[float, str, int, int]] = {}
-            for folder in folders:
-                uids = [u for f, u in found if f == folder][:MAX_THREAD_CANDIDATES]
-                for uid, (raw, _flags, size, internal) in session.summaries(
-                    folder, uids, ["Message-ID", "Date"]
-                ).items():
-                    headers = parse_message(raw)
-                    when = message_date(
-                        headers, internal if isinstance(internal, datetime) else None
-                    )
-                    key = header(headers, "Message-ID") or f"{folder}/{uid}"
-                    # The same message in two folders (e.g. sent to yourself): keep one.
-                    candidates.setdefault(key, (when.timestamp() if when else 0, folder, uid, size))
-            chosen = sorted(candidates.values())[-MAX_THREAD_MESSAGES:]
-            messages = []
-            budget = MAX_THREAD_BYTES
-            for _, folder, uid, size in chosen:
-                if size > min(budget, MAX_FETCH_BYTES):
-                    continue  # too large to read for a thread view; read_message can try
-                budget -= size
-                raw, _ = session.fetch_raw(folder, uid, max_bytes=MAX_FETCH_BYTES)
-                message = parse_message(raw)
-                text, _source = body_text(message)
-                text, truncated = truncate(text, MAX_THREAD_BODY_CHARS)
-                when = message_date(message)
-                from_ = addresses(message, "From")
-                messages.append(
-                    ThreadMessage(
-                        uid=uid,
-                        folder=folder,
-                        message_id=header(message, "Message-ID") or None,
-                        date=when.isoformat() if when else None,
-                        sender=from_[0] if from_ else None,
-                        to=addresses(message, "To"),
-                        subject=header(message, "Subject"),
-                        body=wrap(text, spam=folder == junk),
-                        truncated=truncated,
-                        likely_spam=folder == junk,
-                    )
-                )
-            return Thread(
-                message_id=mid,
-                messages=messages,
-                complete=len(messages) == len(candidates),
-            )
+            messages, complete = find_thread(session, mid)
+            return Thread(message_id=mid, messages=messages, complete=complete)
 
-        result: Thread = await with_session(ctx, "get_thread", work)
-        return result
+        return await with_session(services, ctx, "get_thread", work)
 
     @mcp.tool(
         name="mark_messages",
@@ -669,7 +497,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def mark_messages(
         ctx: Context[Any, Any],
-        folder: Folder,
+        folder: FolderName,
         uids: Uids,
         seen: Annotated[bool | None, Field(description="true: read, false: unread.")] = None,
         flagged: bool | None = None,
@@ -677,7 +505,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         if seen is None and flagged is None:
             raise ToolError("Give seen and/or flagged.")
 
-        def work(session: ImapSession, _: Any) -> Updated:
+        def work(session: ImapSession) -> Updated:
             name = session.resolve(folder)
             present = session.existing(name, uids)
             add = [f for f, v in ((SEEN, seen), (FLAGGED, flagged)) if v is True]
@@ -686,8 +514,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
                 session.set_flags(name, present, add, remove)
             return Updated(folder=name, updated=present, not_found=sorted(set(uids) - set(present)))
 
-        result: Updated = await with_session(ctx, "mark_messages", work)
-        return result
+        return await with_session(services, ctx, "mark_messages", work)
 
     @mcp.tool(
         name="move_messages",
@@ -697,43 +524,44 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def move_messages(
         ctx: Context[Any, Any],
-        folder: Folder,
+        folder: FolderName,
         uids: Uids,
         to_folder: Annotated[str, Field(max_length=500, description="Destination folder or role.")],
     ) -> Moved:
-        def work(session: ImapSession, _: Any) -> Moved:
+        def work(session: ImapSession) -> Moved:
             source = session.resolve(folder)
             destination = session.resolve(to_folder)
             if source == destination:
                 raise InvalidInput("The message is already in that folder.")
-            present = session.existing(source, uids)
-            if present:
-                session.move(source, present, destination)
-            return Moved(
-                from_folder=source,
-                to_folder=destination,
-                moved=present,
-                not_found=sorted(set(uids) - set(present)),
-                note=training_note(services, session, source, destination),
+            return move(services, session, source, uids, destination)
+
+        return await with_session(services, ctx, "move_messages", work)
+
+
+def quarantine_replies(
+    items: list[dict[str, Any]], recipients: set[str], sent_at: datetime
+) -> list[Reply]:
+    """Quarantined messages that may be replies: from one of the original's recipients,
+    after it was sent (quarantine keeps no threading headers)."""
+    earliest = sent_at.timestamp() - QUARANTINE_CLOCK_SKEW_SECONDS
+    replies = []
+    for item in items:
+        created = datetime.fromisoformat(item["created"]) if item.get("created") else None
+        if (
+            item.get("sender", "").lower() in recipients
+            and created
+            and created.timestamp() >= earliest
+        ):
+            replies.append(
+                Reply(
+                    found_in="quarantine",
+                    quarantine_id=item["id"],
+                    date=item["created"],
+                    sender=item["sender"],
+                    subject=item["subject"],
+                    spam_score=item.get("score"),
+                    likely_spam=True,
+                    possible_reply=True,
+                )
             )
-
-        result: Moved = await with_session(ctx, "move_messages", work)
-        return result
-
-
-def training_note(
-    services: Services, session: ImapSession, source: str, destination: str
-) -> str | None:
-    """What moving in or out of Junk teaches the spam filter."""
-    junk = session.folder("junk")
-    trash = session.folder("trash")
-    mailcow = services.config.mode.value == "mailcow"
-    if source == junk and destination != trash:
-        if mailcow:
-            return "mailcow reported these messages to its spam filter (rspamd) as not spam."
-        return "Moved out of Junk. Depending on the mail server, this may train its spam filter."
-    if destination == junk:
-        if mailcow:
-            return "mailcow reported these messages to its spam filter (rspamd) as spam."
-        return "Moved to Junk. Depending on the mail server, this may train its spam filter."
-    return None
+    return replies
