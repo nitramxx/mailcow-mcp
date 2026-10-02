@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 from mailcow_mcp.compose import default_from_name, normalize_message_id
 from mailcow_mcp.config import Mode
-from mailcow_mcp.contacts import CardDav, ContactsAuthFailed
-from mailcow_mcp.errors import CredentialsRejected
+from mailcow_mcp.contacts import CardDav
+from mailcow_mcp.errors import ContactsAuthFailed, CredentialsRejected
 from mailcow_mcp.services import Services
 from mailcow_mcp.tools.common import READ_ONLY
 from mailcow_mcp.untrusted import LISTING_NOTICE, SERVER_NOTICE

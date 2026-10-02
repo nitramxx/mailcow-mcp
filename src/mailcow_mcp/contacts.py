@@ -17,7 +17,7 @@ from xml.etree import ElementTree as ET
 import httpx
 
 from mailcow_mcp.config import AppConfig
-from mailcow_mcp.errors import MailError, ServerUnavailable
+from mailcow_mcp.errors import ContactsAuthFailed, MailError, ServerUnavailable
 from mailcow_mcp.tls import client_context
 
 log = logging.getLogger(__name__)
@@ -28,11 +28,6 @@ NS = {"d": DAV, "c": CARD}
 MAX_RESULTS = 50
 MAX_ADDRESS_BOOKS = 20
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
-
-
-class ContactsAuthFailed(MailError):
-    def __init__(self) -> None:
-        super().__init__("The contacts server didn't accept this mailbox's credentials.")
 
 
 @dataclass

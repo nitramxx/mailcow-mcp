@@ -112,11 +112,7 @@ class SmtpSender:
                     ) from exc
                 details = "; ".join(f"{e.recipient}: {_response(e)}" for e in exc.recipients)
                 raise SendRejected(f"The mail server refused every recipient: {details}") from exc
-            except aiosmtplib.SMTPDataError as exc:
-                raise SendRejected(
-                    f"The mail server refused the message: {_response(exc)}"
-                ) from exc
-            except aiosmtplib.SMTPResponseException as exc:
+            except aiosmtplib.SMTPResponseException as exc:  # e.g. DATA refused
                 raise SendRejected(
                     f"The mail server refused the message: {_response(exc)}"
                 ) from exc

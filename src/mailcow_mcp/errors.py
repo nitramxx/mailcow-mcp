@@ -35,5 +35,10 @@ class CredentialsRejected(MailError):
         )
 
 
+class ContactsAuthFailed(MailError):
+    def __init__(self) -> None:
+        super().__init__("The contacts server didn't accept this mailbox's credentials.")
+
+
 class SendRejected(MailError):
     """The SMTP server refused the message, e.g. by its sender ACL."""

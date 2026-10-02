@@ -20,7 +20,8 @@ from markdown_it import MarkdownIt
 from pydantic import BaseModel, ConfigDict, Field
 
 from mailcow_mcp.errors import InvalidInput, LimitExceeded
-from mailcow_mcp.mime import check_attachment, safe_filename
+from mailcow_mcp.messages import header, header_values
+from mailcow_mcp.mime import check_attachment, parse_message, safe_filename
 
 MAX_RECIPIENTS = 50
 MAX_ATTACHMENTS = 10
@@ -136,10 +137,11 @@ class Composed:
     message_id: str
     envelope_from: str
     recipients: list[str]  # To + Cc + Bcc
+    transmitted: bytes  # what goes to the SMTP server
     copy_with_bcc: bytes  # for Sent and Drafts
 
     def as_bytes(self) -> bytes:
-        return self.message.as_bytes(policy=POLICY)
+        return self.transmitted
 
 
 # --- validation --------------------------------------------------------------
@@ -342,7 +344,7 @@ def compose(
     sender = sender_address.addr_spec
     # The caller's name, else a name given in from_address, else the configured default.
     from_name = (
-        from_name or sender_address.display_name or (from_names or {}).get(sender.lower(), "")
+        from_name or sender_address.display_name or default_from_name(from_names or {}, sender)
     )
 
     if (draft.body_markdown is None) == (draft.body_text is None):
@@ -350,7 +352,7 @@ def compose(
     body = draft.body_markdown if draft.body_markdown is not None else draft.body_text
     assert body is not None  # noqa: S101 - checked just above
     if len(body) > MAX_BODY_CHARS:
-        raise LimitExceeded("The body is longer than 1,000,000 characters.")
+        raise LimitExceeded(f"The body is longer than {MAX_BODY_CHARS:,} characters.")
     if len(draft.attachments) > MAX_ATTACHMENTS:
         raise LimitExceeded(f"At most {MAX_ATTACHMENTS} attachments per message.")
 
@@ -389,9 +391,7 @@ def compose(
         if part is not message:
             del part["MIME-Version"]  # the stdlib adds it to sub-parts; it belongs only on top
     transmitted = message.as_bytes(policy=POLICY)
-    if len(transmitted) > max_message_bytes:
-        size = max_message_bytes // (1024 * 1024)
-        raise LimitExceeded(f"The message is larger than the {size} MB limit.")
+    _check_size(transmitted, max_message_bytes, "message")
     copy_bytes = transmitted
     if bcc:
         # Bcc stays only in our own copies (Sent, Drafts), never in what's transmitted.
@@ -403,5 +403,54 @@ def compose(
         message_id=message_id,
         envelope_from=sender,
         recipients=recipients,
+        transmitted=transmitted,
+        copy_with_bcc=copy_bytes,
+    )
+
+
+def _check_size(data: bytes, max_bytes: int, what: str) -> None:
+    if len(data) > max_bytes:
+        raise LimitExceeded(f"The {what} is larger than the {max_bytes // (1024 * 1024)} MB limit.")
+
+
+def prepare_stored(
+    raw: bytes, *, max_message_bytes: int, timezone: tzinfo | None = None
+) -> Composed:
+    """A stored draft, ready to send exactly as it is (e.g. edited in a mail app).
+
+    Recipients come from To, Cc and Bcc; Bcc is removed from what's transmitted, the
+    Date is set to now, and a Message-ID is added if the draft has none.
+    """
+    message = parse_message(raw)
+    recipients: list[str] = []
+    for name in ("To", "Cc", "Bcc"):
+        for _, addr in getaddresses(header_values(message, name)):
+            normalized = normalize_address(addr)
+            if normalized is None:
+                raise InvalidInput(f"The draft has an invalid address in {name}: {addr!r}")
+            if normalized not in recipients:
+                recipients.append(normalized)
+    if not recipients:
+        raise InvalidInput("The draft has no recipients.")
+    if len(recipients) > MAX_RECIPIENTS:
+        raise LimitExceeded(f"At most {MAX_RECIPIENTS} recipients per message.")
+    senders = getaddresses(header_values(message, "From"))
+    sender = normalize_address(senders[0][1]) if len(senders) == 1 else None
+    if sender is None:
+        raise InvalidInput("The draft has no valid From address.")
+    if "Message-ID" not in message:
+        message["Message-ID"] = new_message_id(sender.rpartition("@")[2])
+    del message["Date"]
+    message["Date"] = format_date(timezone)
+    copy_bytes = message.as_bytes(policy=POLICY)
+    del message["Bcc"]
+    transmitted = message.as_bytes(policy=POLICY)
+    _check_size(transmitted, max_message_bytes, "draft")
+    return Composed(
+        message=message,
+        message_id=header(message, "Message-ID"),
+        envelope_from=sender,
+        recipients=recipients,
+        transmitted=transmitted,
         copy_with_bcc=copy_bytes,
     )

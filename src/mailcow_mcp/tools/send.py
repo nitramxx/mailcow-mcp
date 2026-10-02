@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from email.utils import getaddresses
 from typing import Annotated, Any
 
 import anyio
@@ -12,8 +11,10 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from mailcow_mcp.compose import (
+    MAX_ATTACHMENTS,
+    MAX_NAME_LENGTH,
     MAX_PDF_MARKDOWN_TOTAL,
-    POLICY,
+    MAX_SUBJECT_LENGTH,
     Attachment,
     Composed,
     FileAttachment,
@@ -22,17 +23,15 @@ from mailcow_mcp.compose import (
     Outgoing,
     RenderedPdf,
     compose,
-    format_date,
     inline_attachment,
-    new_message_id,
-    normalize_address,
     normalize_message_id,
     pdf_attachment,
+    prepare_stored,
 )
 from mailcow_mcp.config import SaveSent
-from mailcow_mcp.errors import InvalidInput, LimitExceeded, MailError
+from mailcow_mcp.errors import LimitExceeded, MailError
 from mailcow_mcp.imap import DRAFT, SEEN, ImapSession
-from mailcow_mcp.messages import header, header_values
+from mailcow_mcp.messages import header
 from mailcow_mcp.mime import check_attachment, find_part, parse_message, part_bytes
 from mailcow_mcp.services import Mailbox, Services
 from mailcow_mcp.smtp import SendResult as SmtpResult
@@ -51,10 +50,20 @@ Recipients = Annotated[
 ]
 
 
+Subject = Annotated[str, Field(max_length=MAX_SUBJECT_LENGTH)]
+BodyMarkdown = Annotated[str | None, Field(description="Body in Markdown.")]
+BodyText = Annotated[str | None, Field(description="Plain-text body.")]
+FromAddress = Annotated[
+    str | None,
+    Field(description="One of the mailbox's own addresses or aliases; default: the mailbox."),
+]
+InReplyTo = Annotated[str | None, Field(description="Message-ID being replied to.")]
+Attachments = Annotated[list[Attachment] | None, Field(max_length=MAX_ATTACHMENTS)]
+
 FromName = Annotated[
     str | None,
     Field(
-        max_length=100,
+        max_length=MAX_NAME_LENGTH,
         description=(
             "Set from_name so recipients see a display name; if omitted, the configured default "
             "for from_address is used."
@@ -90,8 +99,7 @@ def _references(session: ImapSession, message_id: str) -> list[str]:
         return []
     folder, uid = found
     raw = session.headers(folder, [uid], ["References"]).get(uid, b"")
-    value = parse_message(raw).get("References", "")
-    return str(value).split()
+    return header(parse_message(raw), "References").split()
 
 
 def _collect_attachments(
@@ -228,23 +236,16 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def send_email(
         to: Recipients,
-        subject: Annotated[str, Field(max_length=500)],
+        subject: Subject,
         ctx: Context[Any, Any],
         cc: Recipients | None = None,
         bcc: Recipients | None = None,
-        body_markdown: Annotated[str | None, Field(description="Body in Markdown.")] = None,
-        body_text: Annotated[str | None, Field(description="Plain-text body.")] = None,
+        body_markdown: BodyMarkdown = None,
+        body_text: BodyText = None,
         from_name: FromName = None,
-        from_address: Annotated[
-            str | None,
-            Field(
-                description="One of the mailbox's own addresses or aliases; default: the mailbox."
-            ),
-        ] = None,
-        in_reply_to: Annotated[
-            str | None, Field(description="Message-ID being replied to.")
-        ] = None,
-        attachments: Annotated[list[Attachment] | None, Field(max_length=10)] = None,
+        from_address: FromAddress = None,
+        in_reply_to: InReplyTo = None,
+        attachments: Attachments = None,
     ) -> SendResult:
         async with services.tool(ctx, "send_email") as mailbox:
             outgoing = Outgoing(
@@ -301,20 +302,16 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     )
     async def save_draft(
         to: Recipients,
-        subject: Annotated[str, Field(max_length=500)],
+        subject: Subject,
         ctx: Context[Any, Any],
         cc: Recipients | None = None,
         bcc: Recipients | None = None,
-        body_markdown: Annotated[str | None, Field(description="Body in Markdown.")] = None,
-        body_text: Annotated[str | None, Field(description="Plain-text body.")] = None,
+        body_markdown: BodyMarkdown = None,
+        body_text: BodyText = None,
         from_name: FromName = None,
-        from_address: Annotated[
-            str | None, Field(description="One of the mailbox's addresses.")
-        ] = None,
-        in_reply_to: Annotated[
-            str | None, Field(description="Message-ID being replied to.")
-        ] = None,
-        attachments: Annotated[list[Attachment] | None, Field(max_length=10)] = None,
+        from_address: FromAddress = None,
+        in_reply_to: InReplyTo = None,
+        attachments: Attachments = None,
     ) -> DraftResult:
         async with services.tool(ctx, "save_draft") as mailbox:
             outgoing = Outgoing(
@@ -330,16 +327,15 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
             )
             composed = await prepare(mailbox, outgoing, attachments or [])
 
-            def store() -> tuple[str, int | None]:
-                with services.imap.connect(mailbox.username, mailbox.password) as session:
-                    folder = session.require_folder("drafts")
-                    uid = session.append(folder, composed.copy_with_bcc, [DRAFT, SEEN])
-                    if uid is None:
-                        uids = session.find_message_id(folder, composed.message_id)
-                        uid = max(uids) if uids else None
-                    return folder, uid
+            def store(session: ImapSession) -> tuple[str, int | None]:
+                folder = session.require_folder("drafts")
+                uid = session.append(folder, composed.copy_with_bcc, [DRAFT, SEEN])
+                if uid is None:
+                    uids = session.find_message_id(folder, composed.message_id)
+                    uid = max(uids) if uids else None
+                return folder, uid
 
-            folder, uid = await anyio.to_thread.run_sync(store)
+            folder, uid = await services.run_imap(mailbox, store)
             services.audit(
                 "save_draft",
                 mailbox=mailbox.username,
@@ -367,54 +363,30 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
         async with services.tool(ctx, "send_draft") as mailbox:
             services.send_limits.check(mailbox.username)
 
-            def load() -> tuple[bytes, bytes, str, str, list[str]]:
-                with services.imap.connect(mailbox.username, mailbox.password) as session:
-                    folder = session.require_folder("drafts")
-                    raw, _ = session.fetch_raw(folder, uid, max_bytes=services.max_message_bytes)
-                    message = parse_message(raw)
-                    recipients: list[str] = []
-                    for name in ("To", "Cc", "Bcc"):
-                        for _, addr in getaddresses(header_values(message, name)):
-                            normalized = normalize_address(addr)
-                            if normalized is None:
-                                raise InvalidInput(
-                                    f"The draft has an invalid address in {name}: {addr!r}"
-                                )
-                            if normalized not in recipients:
-                                recipients.append(normalized)
-                    if not recipients:
-                        raise InvalidInput("The draft has no recipients.")
-                    if len(recipients) > 50:
-                        raise LimitExceeded("At most 50 recipients per message.")
-                    senders = getaddresses(header_values(message, "From"))
-                    sender = normalize_address(senders[0][1]) if len(senders) == 1 else None
-                    if sender is None:
-                        raise InvalidInput("The draft has no valid From address.")
-                    if "Message-ID" not in message:
-                        message["Message-ID"] = new_message_id(sender.rpartition("@")[2])
-                    message_id = header(message, "Message-ID")
-                    del message["Date"]
-                    message["Date"] = format_date(config.timezone)
-                    copy = message.as_bytes(policy=POLICY)
-                    del message["Bcc"]
-                    transmitted = message.as_bytes(policy=POLICY)
-                    if len(transmitted) > services.max_message_bytes:
-                        raise LimitExceeded("The draft is larger than the message size limit.")
-                return transmitted, copy, sender, message_id, recipients
+            def load(session: ImapSession) -> Composed:
+                drafts = session.require_folder("drafts")
+                raw, _ = session.fetch_raw(drafts, uid, max_bytes=services.max_message_bytes)
+                return prepare_stored(
+                    raw, max_message_bytes=services.max_message_bytes, timezone=config.timezone
+                )
 
-            transmitted, copy, sender, message_id, recipients = await anyio.to_thread.run_sync(load)
-            result = await send(mailbox, sender, recipients, transmitted)
-            saved, folder, note = await anyio.to_thread.run_sync(file_sent, mailbox, copy, uid)
+            stored = await services.run_imap(mailbox, load)
+            result = await send(
+                mailbox, stored.envelope_from, stored.recipients, stored.transmitted
+            )
+            saved, folder, note = await anyio.to_thread.run_sync(
+                file_sent, mailbox, stored.copy_with_bcc, uid
+            )
             services.audit(
                 "send_draft",
                 mailbox=mailbox.username,
                 client=mailbox.client_name,
                 recipients=len(result.accepted),
                 refused=len(result.refused),
-                bytes=len(transmitted),
+                bytes=len(stored.transmitted),
             )
             return SendResult(
-                message_id=message_id,
+                message_id=stored.message_id,
                 accepted=result.accepted,
                 refused=result.refused,
                 saved_to_sent=saved,
