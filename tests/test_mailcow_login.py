@@ -13,6 +13,7 @@ import pytest
 
 from mailcow_mcp.imap import LoginResult
 from mailcow_mcp.lifecycle import drain_deprovision_queue, reconcile
+from mailcow_mcp.ratelimit import RateLimiter
 
 from conftest import (
     BASE_URL,
@@ -274,3 +275,63 @@ def test_tools_fail_cleanly_when_the_mail_server_is_unreachable(
     assert session.request("tools/list", {})["tools"]
     with pytest.raises(ToolFailed, match="can't be reached"):
         session.call("read_message", folder="INBOX", uid=1)  # no IMAP server in this test
+
+
+def _callback(app: Harness, **query: str) -> Any:
+    """mailcow's redirect back, with this browser's state."""
+    _, mailcow_url, _ = start(app)
+    state = query_of(mailcow_url)["state"]
+    return app.client.get(
+        "/oauth/mailcow/callback", params={"state": state, **query}, follow_redirects=False
+    )
+
+
+@pytest.mark.parametrize("code", ["", "x" * 1025])
+def test_callback_without_a_usable_code(app: Harness, mailcow: MockMailcow, code: str) -> None:
+    response = _callback(app, code=code)
+    assert response.status_code == 400
+    assert "Signing in with mailcow didn" in response.text
+    assert mailcow.app_passwords == []
+
+
+def test_callback_with_a_code_mailcow_refuses(app: Harness, mailcow: MockMailcow) -> None:
+    response = _callback(app, code="not-issued-by-mailcow")
+    assert response.status_code == 502
+    assert mailcow.app_passwords == []
+    assert '"result":"mailcow_failed"' in app.audit_stream.getvalue()
+
+
+def test_callback_replay(app: Harness, mailcow: MockMailcow, certs: Path) -> None:
+    _, mailcow_url, _ = start(app)
+    back = at_mailcow(mailcow_url, certs)
+    callback = back.headers["location"].removeprefix(BASE_URL)
+    assert app.client.get(callback, follow_redirects=False).status_code == 303
+    again = app.client.get(callback, follow_redirects=False)
+    assert again.status_code == 400  # the state cookie is gone, and so is the sign-in
+    assert len(mailcow.app_passwords) == 1
+
+
+def test_broker_refusal_during_sign_in(
+    app: Harness, mailcow: MockMailcow, certs: Path, broker: BrokerSetup
+) -> None:
+    broker.broker.provision_limit = RateLimiter(0, 3600)
+    _, response = sign_in(app, certs)
+    assert response.status_code == 502
+    assert "Signing in with mailcow didn" in response.text
+    assert mailcow.app_passwords == []
+
+
+def test_broker_unreachable_during_sign_in(
+    app: Harness,
+    mailcow: MockMailcow,
+    certs: Path,
+    broker: BrokerSetup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unreachable(*args: object, **kwargs: object) -> None:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(broker.client._http, "post", unreachable)
+    _, response = sign_in(app, certs)
+    assert response.status_code == 503
+    assert "mailcow can" in response.text

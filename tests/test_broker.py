@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import httpx
 import pytest
 
 from mailcow_mcp.broker import (
+    MAX_BODY_BYTES,
     RECONCILE_GRACE_SECONDS,
     app_password_name,
     generate_password,
@@ -15,8 +17,9 @@ from mailcow_mcp.broker import (
 )
 from mailcow_mcp.capability import CapabilitySigner, InvalidCapability
 from mailcow_mcp.config import generate_key
+from mailcow_mcp.ratelimit import RateLimiter
 
-from mailcow_fixtures import BrokerSetup, make_broker
+from mailcow_fixtures import SHARED_SECRET, BrokerSetup, make_broker
 from mock_mailcow import MockMailcow, RunningMailcow
 
 pytestmark = pytest.mark.anyio
@@ -145,6 +148,31 @@ class TestTransport:
     async def test_unknown_operation_and_bad_bodies(self, broker: BrokerSetup) -> None:
         assert (await broker.call("delete_everything")).status_code == 404
         assert (await broker.call("provision")).status_code == 400
+
+    async def test_body_checks(self, broker: BrokerSetup) -> None:
+        async def post(content: bytes) -> httpx.Response:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=broker.app), base_url="http://broker"
+            ) as http:
+                return await http.post(
+                    "/v1/aliases", content=content, headers={"X-Broker-Secret": SHARED_SECRET}
+                )
+
+        assert (await post(b"x" * (MAX_BODY_BYTES + 1))).status_code == 413
+        assert (await post(b"not json")).json()["error"] == "invalid_request"
+        assert (await post(b"[1, 2]")).json()["message"] == "body must be an object"
+
+    async def test_operations_are_limited_per_mailbox(
+        self, broker: BrokerSetup, mailcow: MockMailcow
+    ) -> None:
+        result = await provision(broker, mailcow)
+        broker.broker.operation_limit = RateLimiter(2, 60)
+        for _ in range(2):
+            assert (
+                await broker.call("aliases", capability=result["capability"])
+            ).status_code == 200
+        limited = await broker.call("aliases", capability=result["capability"])
+        assert limited.status_code == 429
 
     async def test_mailcow_refusal_reason_is_reported(
         self, running_mailcow: RunningMailcow, mailcow: MockMailcow, certs: Path, tmp_path: Path
