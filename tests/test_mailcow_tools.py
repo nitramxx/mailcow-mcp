@@ -18,7 +18,9 @@ from mock_mailcow import MockMailcow, RunningMailcow
 from radicale.app import Application
 from test_mailcow_login import in_app, sign_in
 
+from mailcow_mcp.config import generate_key, load_app_config
 from mailcow_mcp.contacts import CardDav, parse_vcards
+from mailcow_mcp.errors import MailError
 
 from conftest import Harness, McpSession, ToolFailed, app_config, make_harness, query_of
 from mailserver_fixture import ALICE, MailServer
@@ -81,6 +83,69 @@ def test_vcard_parsing() -> None:
     assert first.emails == ["a@b.c"]
     assert first.organisation == "A, B, Sales"
     assert second.name == "John Doe"
+
+
+def test_vcard_escapes_and_empty_name_parts() -> None:
+    (card,) = parse_vcards("BEGIN:VCARD\r\nN:;Jan;Karel;;\r\nORG:C:\\\\new\r\nEND:VCARD\r\n")
+    assert card.name == "Jan"
+    assert card.organisation == "C:\\new"
+
+
+def test_carddav_via_internal_url() -> None:
+    config = load_app_config(
+        {
+            "PUBLIC_URL": "https://mcp.mail.example.com",
+            "MAILCOW_URL": "https://mail.example.com",
+            "MAILCOW_INTERNAL_URL": "https://nginx-mailcow",
+            "MAILCOW_OAUTH_CLIENT_ID": "client-id",
+            "MAILCOW_OAUTH_CLIENT_SECRET": "client-secret-value",
+            "BROKER_SHARED_SECRET": "s" * 32,
+            "TLS_SERVER_NAME": "mail.example.com",
+            "ENC_KEY": generate_key(),
+            "TRUSTED_PROXIES": "172.22.1.0/24",
+        }
+    )
+    carddav = CardDav.from_config(config)
+    assert carddav.url == "https://nginx-mailcow/SOGo/dav/"
+    assert carddav.headers == {"Host": "mail.example.com"}
+    assert getattr(carddav.verify, "fixed_server_name", None) == "mail.example.com"
+
+
+def _dav_server(principal: str, seen: list[str]) -> httpx.MockTransport:
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        href = principal if len(seen) == 1 else "/SOGo/dav/u/Contacts/"
+        body = (
+            '<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav">'
+            "<d:response><d:propstat><d:prop><d:current-user-principal>"
+            f"<d:href>{href}</d:href></d:current-user-principal></d:prop></d:propstat>"
+            "</d:response></d:multistatus>"
+        )
+        return httpx.Response(207, text=body)
+
+    return httpx.MockTransport(handle)
+
+
+@pytest.mark.anyio
+async def test_carddav_maps_public_hrefs_to_the_internal_url() -> None:
+    seen: list[str] = []
+    transport = _dav_server("https://mail.example.com/SOGo/dav/u/", seen)
+    carddav = CardDav(
+        "https://nginx-mailcow/SOGo/dav/", host_header="mail.example.com", transport=transport
+    )
+    assert await carddav.search("u", "pw", "jan") == []
+    assert seen[1] == "https://nginx-mailcow/SOGo/dav/u/"
+    assert all(url.startswith("https://nginx-mailcow/") for url in seen)
+
+
+@pytest.mark.anyio
+async def test_carddav_never_sends_credentials_elsewhere() -> None:
+    seen: list[str] = []
+    transport = _dav_server("https://evil.example/collect/", seen)
+    carddav = CardDav("https://contacts.test/dav/", transport=transport)
+    with pytest.raises(MailError, match="another server"):
+        await carddav.search("u", "pw", "jan")
+    assert all(url.startswith("https://contacts.test/") for url in seen)
 
 
 class TestContactsGeneric:

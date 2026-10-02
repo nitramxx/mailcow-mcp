@@ -13,7 +13,6 @@ from mailcow_mcp.config import Mode
 from mailcow_mcp.contacts import CardDav, ContactsAuthFailed
 from mailcow_mcp.errors import CredentialsRejected
 from mailcow_mcp.services import Mailbox, Services
-from mailcow_mcp.tls import client_context
 from mailcow_mcp.tools.read import READ_ONLY
 from mailcow_mcp.untrusted import LISTING_NOTICE
 
@@ -84,12 +83,7 @@ def register(mcp: MCPServer[Any], services: Services) -> None:
     if config.mode is Mode.MAILCOW:
         _register_mailcow(mcp, services)
     if config.carddav_url:
-        carddav = services.carddav or CardDav(
-            config.carddav_url,
-            verify=client_context(
-                server_name=None, verify=config.tls_verify, ca_file=config.tls_ca_file
-            ),
-        )
+        carddav = services.carddav or CardDav.from_config(config)
         _register_contacts(mcp, services, carddav)
 
 

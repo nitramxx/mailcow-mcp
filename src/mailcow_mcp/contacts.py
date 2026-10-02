@@ -8,14 +8,17 @@ rejects the filtered query, all cards are fetched and filtered here.
 from __future__ import annotations
 
 import logging
+import re
 import ssl
 from dataclasses import dataclass, field
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree as ET
 
 import httpx
 
+from mailcow_mcp.config import AppConfig
 from mailcow_mcp.errors import MailError, ServerUnavailable
+from mailcow_mcp.tls import client_context
 
 log = logging.getLogger(__name__)
 
@@ -50,14 +53,12 @@ def _unfold(text: str) -> list[str]:
     return lines
 
 
+_ESCAPE_RE = re.compile(r"\\(.)")
+
+
 def _unescape(value: str) -> str:
-    return (
-        value.replace("\\n", "\n")
-        .replace("\\N", "\n")
-        .replace("\\,", ",")
-        .replace("\\;", ";")
-        .replace("\\\\", "\\")
-    )
+    """RFC 6350 escapes, in one pass (so "\\\\n" stays a backslash and an n)."""
+    return _ESCAPE_RE.sub(lambda m: "\n" if m.group(1) in "nN" else m.group(1), value)
 
 
 def parse_vcards(text: str) -> list[Contact]:
@@ -71,8 +72,10 @@ def parse_vcards(text: str) -> list[Contact]:
         elif prop == "END" and value.upper() == "VCARD" and current is not None:
             fn = (current.get("FN") or [""])[0]
             if not fn and current.get("N"):
-                parts = [p for p in current["N"][0].split(";") if p]
-                fn = " ".join(reversed(parts[:2]))
+                # N is family;given;additional;prefixes;suffixes, any of them empty.
+                family, _, rest = current["N"][0].partition(";")
+                given = rest.partition(";")[0]
+                fn = " ".join(p for p in (given, family) if p)
             orgs = current.get("ORG") or []
             org = orgs[0] if orgs else None
             contacts.append(
@@ -117,6 +120,11 @@ ALL_CARDS = (
 )
 
 
+def _origin(url: str) -> tuple[str, str]:
+    parts = urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
 def _propfind(prop_xml: str) -> bytes:
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
@@ -137,6 +145,26 @@ class CardDav:
         self.verify = verify
         self.headers = {"Host": host_header} if host_header else {}
         self.transport = transport
+        # Reached by an internal name, the server may still answer with its public URL.
+        self.public_origin = ("https", host_header.lower()) if host_header else None
+
+    @classmethod
+    def from_config(cls, config: AppConfig) -> CardDav:
+        assert config.carddav_url  # noqa: S101 - only called when contacts are configured
+        # Via MAILCOW_INTERNAL_URL: dial nginx directly, but ask for and verify the
+        # mailcow hostname (as for the OAuth token exchange).
+        host_header = None
+        if config.carddav_internal and config.mailcow_url:
+            host_header = urlsplit(config.mailcow_url).netloc
+        return cls(
+            config.carddav_url,
+            verify=client_context(
+                server_name=config.tls_server_name if host_header else None,
+                verify=config.tls_verify,
+                ca_file=config.tls_ca_file,
+            ),
+            host_header=host_header,
+        )
 
     async def search(self, username: str, password: str, query: str) -> list[Contact]:
         async with httpx.AsyncClient(
@@ -166,22 +194,37 @@ class CardDav:
     async def _request(
         self, http: httpx.AsyncClient, method: str, url: str, body: bytes, depth: str
     ) -> ET.Element:
-        response = await http.request(
+        url = self._local(url)
+        async with http.stream(
             method,
             url,
             content=body,
             headers={"Depth": depth, "Content-Type": "application/xml; charset=utf-8"},
-        )
-        if response.status_code == 401:
-            raise ContactsAuthFailed()
-        if response.status_code != 207:
-            raise MailError(f"The contacts server answered HTTP {response.status_code}.")
-        if len(response.content) > MAX_RESPONSE_BYTES:
-            raise MailError("The contacts server's answer is too large.")
+        ) as response:
+            if response.status_code == 401:
+                raise ContactsAuthFailed()
+            if response.status_code != 207:
+                raise MailError(f"The contacts server answered HTTP {response.status_code}.")
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                content += chunk
+                if len(content) > MAX_RESPONSE_BYTES:
+                    raise MailError("The contacts server's answer is too large.")
         try:
-            return ET.fromstring(response.content)  # noqa: S314 - stdlib parser doesn't expand external entities
+            return ET.fromstring(bytes(content))  # noqa: S314 - stdlib parser doesn't expand external entities
         except ET.ParseError as exc:
             raise MailError("The contacts server sent invalid XML.") from exc
+
+    def _local(self, url: str) -> str:
+        """The URL to request: on this server only, whatever its answers point to
+        (the credentials are for this server alone)."""
+        origin = _origin(url)
+        if origin == _origin(self.url):
+            return url
+        if origin == self.public_origin:
+            scheme, netloc = _origin(self.url)
+            return urlsplit(url)._replace(scheme=scheme, netloc=netloc).geturl()
+        raise MailError("The contacts server referred to another server.")
 
     async def _href(self, http: httpx.AsyncClient, url: str, prop: str, path: str) -> str | None:
         root = await self._request(http, "PROPFIND", url, _propfind(prop), "0")
