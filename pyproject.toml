@@ -1,6 +1,6 @@
 [project]
 name = "mailcow-mcp"
-version = "0.1.5"
+version = "0.1.6"
 description = "Self-hosted remote MCP server for mailcow: send, draft, read and follow up on email from any MCP client."
 readme = "README.md"
 license = "MIT"

@@ -7,7 +7,9 @@ versions and are described in `docs/upgrading.md`.
 
 ## [Unreleased]
 
-Fixes from a full code review (CODE_REVIEW.md).
+## [0.1.6] - 2026-10-02
+
+Fixes from a full code review. Update both containers (`sudo ./setup-mailcow.sh update`).
 
 ### Security
 
@@ -181,7 +183,8 @@ First release.
   user guide.
 - Multi-arch image (linux/amd64, linux/arm64) on GHCR with SBOM and provenance.
 
-[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/nitramxx/mailcow-mcp/compare/v0.1.2...v0.1.3
