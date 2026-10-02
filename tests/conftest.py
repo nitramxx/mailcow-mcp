@@ -140,6 +140,7 @@ class Harness:
         *,
         email: str = EMAIL,
         password: str = PASSWORD,
+        headers: dict[str, str] | None = None,
         **extra: str,
     ) -> Any:
         data = {
@@ -150,7 +151,7 @@ class Harness:
             "password": password,
         }
         data.update(extra)
-        return self.client.post("/login", data=data, follow_redirects=False)
+        return self.client.post("/login", data=data, headers=headers, follow_redirects=False)
 
     def sign_in(
         self, client_id: str, email: str = EMAIL, password: str = PASSWORD

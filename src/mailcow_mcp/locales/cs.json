@@ -33,5 +33,7 @@
   "error_mailcow_cancelled": "Přihlášení v mailcow bylo zrušeno.",
   "error_mailcow_failed": "Přihlášení přes mailcow se nepodařilo. Zkuste to znovu; pokud to nepomůže, obraťte se na správce.",
   "error_mailcow_unavailable": "mailcow je teď nedostupný. Zkuste to za pár minut znovu.",
-  "error_domain_mailcow": "Tento server nepřijímá přihlášení pro vaši doménu."
+  "error_domain_mailcow": "Tento server nepřijímá přihlášení pro vaši doménu.",
+  "rate_limited_title": "Příliš mnoho pokusů",
+  "error_cross_origin": "Přihlašovací formulář byl odeslán z jiného webu. Vraťte se do aplikace a připojte ji znovu."
 }

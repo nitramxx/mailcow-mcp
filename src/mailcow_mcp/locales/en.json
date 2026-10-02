@@ -33,5 +33,7 @@
   "error_mailcow_cancelled": "The sign-in at mailcow was cancelled.",
   "error_mailcow_failed": "Signing in with mailcow didn't work. Try again; if it keeps failing, ask your administrator.",
   "error_mailcow_unavailable": "mailcow can't be reached right now. Try again in a few minutes.",
-  "error_domain_mailcow": "This server doesn't accept sign-ins for your domain."
+  "error_domain_mailcow": "This server doesn't accept sign-ins for your domain.",
+  "rate_limited_title": "Too many attempts",
+  "error_cross_origin": "This sign-in page was submitted from another site. Go back to your app and connect again."
 }

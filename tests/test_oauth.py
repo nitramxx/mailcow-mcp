@@ -320,25 +320,44 @@ class TestSignIn:
         assert response.status_code == 403
         assert harness.verifier.calls == []
 
-    @pytest.mark.parametrize("origin", [BASE_URL, "null"])
-    def test_browser_origins_are_accepted(self, harness: Harness, origin: str) -> None:
-        # Browsers send our origin, or "null" under a no-referrer policy.
+    def test_our_origin_is_accepted(self, harness: Harness) -> None:
         client_id = harness.register()["client_id"]
         _, challenge = pkce_pair()
         request_id, csrf = harness.open_login(harness.authorize(client_id, challenge))
-        response = harness.client.post(
-            "/login",
-            data={
-                "request": request_id,
-                "csrf": csrf,
-                "action": "login",
-                "email": EMAIL,
-                "password": PASSWORD,
-            },
-            headers={"Origin": origin},
-            follow_redirects=False,
-        )
+        response = harness.submit_login(request_id, csrf, headers={"Origin": BASE_URL})
         assert response.status_code == 303
+
+    def test_null_origin_is_refused(self, harness: Harness) -> None:
+        # Sandboxed frames send "null"; our own page always sends its origin.
+        client_id = harness.register()["client_id"]
+        _, challenge = pkce_pair()
+        request_id, csrf = harness.open_login(harness.authorize(client_id, challenge))
+        response = harness.submit_login(request_id, csrf, headers={"Origin": "null"})
+        assert response.status_code == 403
+        assert harness.verifier.calls == []
+
+    def test_form_only_works_in_the_browser_that_loaded_it(self, harness: Harness) -> None:
+        # An attacker starts a sign-in for their own client and makes the victim's
+        # browser post it: the victim's browser has no (or another) login cookie.
+        client_id = harness.register()["client_id"]
+        _, challenge = pkce_pair()
+        request_id, csrf = harness.open_login(harness.authorize(client_id, challenge))
+        harness.client.cookies.clear()
+        response = harness.submit_login(request_id, csrf)
+        assert response.status_code == 400
+        harness.client.get("/login", params={"request": request_id})  # another browser id
+        harness.client.cookies.clear()
+        harness.client.get("/login", params={"request": request_id})
+        assert harness.submit_login(request_id, csrf).status_code == 400
+        assert harness.verifier.calls == []
+
+    def test_reloading_keeps_the_form_valid(self, harness: Harness) -> None:
+        client_id = harness.register()["client_id"]
+        _, challenge = pkce_pair()
+        login_url = harness.authorize(client_id, challenge)
+        request_id, csrf = harness.open_login(login_url)
+        harness.open_login(login_url)  # a second tab or a reload
+        assert harness.submit_login(request_id, csrf).status_code == 303
 
     def test_cancel(self, harness: Harness) -> None:
         client_id = harness.register()["client_id"]
