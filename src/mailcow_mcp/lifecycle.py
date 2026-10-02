@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from mailcow_mcp.broker_client import BrokerClient, RevokedCapability
-from mailcow_mcp.errors import MailError
+from mailcow_mcp.errors import MailError, ServerUnavailable
 from mailcow_mcp.oauth import Provider
 
 log = logging.getLogger(__name__)
@@ -21,16 +21,14 @@ async def drain_deprovision_queue(provider: Provider, broker: BrokerClient) -> i
             await broker.deprovision(capability)
         except RevokedCapability:
             pass  # already gone in the broker's records
+        except ServerUnavailable:
+            break  # broker or mailcow down: the rest would fail the same way
         except MailError as exc:
-            provider.deprovision_failed(queue_id, str(exc))
-            row = provider.db.one(
-                "SELECT attempts FROM deprovision_queue WHERE id = ?", (queue_id,)
-            )
-            if row is not None and row["attempts"] >= MAX_ATTEMPTS:
+            if provider.deprovision_failed(queue_id, str(exc)) >= MAX_ATTEMPTS:
                 log.warning("giving up deprovisioning an app password of %s", mailbox)
-                provider.deprovisioned(queue_id)
+                provider.mark_deprovisioned(queue_id)
             continue
-        provider.deprovisioned(queue_id)
+        provider.mark_deprovisioned(queue_id)
         done += 1
     return done
 

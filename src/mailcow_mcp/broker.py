@@ -20,6 +20,8 @@ Operations (POST /v1/<operation>, JSON):
 from __future__ import annotations
 
 import hmac
+import json
+import logging
 import re
 import secrets
 import string
@@ -43,14 +45,23 @@ from mailcow_mcp.db import Database
 from mailcow_mcp.mailcow_api import MailcowApi, MailcowError, MailcowUnavailable, TokenRejected
 from mailcow_mcp.ratelimit import RateLimiter
 
+log = logging.getLogger(__name__)
+
 SECRET_HEADER = "X-Broker-Secret"  # noqa: S105 - a header name
 NAME_PREFIX = "MCP: "
 MIGRATIONS = "mailcow_mcp.broker_migrations"
 MAX_BODY_BYTES = 64 * 1024
+# reconcile carries every capability the app holds (~160 bytes each).
+MAX_CAPABILITIES = 100_000
+MAX_RECONCILE_BYTES = MAX_CAPABILITIES * 256
 LOG_LINES = 10_000
+LOG_CACHE_SECONDS = 15
 ALIAS_CACHE_SECONDS = 300
 PROVISIONS_PER_MAILBOX_HOUR = 10
 RECONCILE_GRACE_SECONDS = 600
+# Rows of deleted app passwords are kept this long (their mailboxes are still
+# checked for leftover "MCP: " app passwords), then forgotten.
+DEPROVISIONED_RETENTION_SECONDS = 30 * 86400
 
 _NAME_UNSAFE = re.compile(r"[^\w .()\-]", re.UNICODE)
 _QUEUE_ID = re.compile(r"^([0-9A-Za-z]{6,20}): (.*)$")
@@ -97,12 +108,14 @@ def parse_delivery(
     entries = []
     for row in logs:
         match = _QUEUE_ID.match(str(row.get("message", "")))
-        if match:
+        if match and match.group(1) != "NOQUEUE":
             try:
                 when = int(row.get("time", 0))
             except (TypeError, ValueError):
                 when = 0
             entries.append((when, match.group(1), match.group(2)))
+    # mailcow lists the newest first; within one second keep the log's own order.
+    entries.reverse()
     entries.sort(key=lambda e: e[0])
     queue_ids = {qid for _, qid, text in entries if text.strip() == f"message-id={message_id}"}
     owned = set()
@@ -117,7 +130,8 @@ def parse_delivery(
             continue
         fields, _, response = text.partition(" (")
         values = dict(part.split("=", 1) for part in fields.split(", ") if "=" in part)
-        recipient = values.get("to", "").strip("<>").lower()
+        # orig_to is the address the sender used (to= may be a group alias's members).
+        recipient = (values.get("orig_to") or values.get("to", "")).strip("<>").lower()
         status = values.get("status", "")
         if not recipient or not status:
             continue
@@ -126,7 +140,7 @@ def parse_delivery(
             "status": status,
             "dsn": values.get("dsn"),
             "relay": values.get("relay"),
-            "response": response.rstrip(")") if response else None,
+            "response": response.removesuffix(")") if response else None,
             "time": datetime.fromtimestamp(when, UTC).isoformat() if when else None,
             "queue_id": qid,
         }
@@ -149,8 +163,10 @@ class Broker:
         self.audit = audit
         self.signer = CapabilitySigner(config.broker_signing_key)
         self._clock = clock
-        self._lock = anyio.Lock()  # provisioning vs. reconcile
+        # Per mailbox: provisioning vs. reconcile (which deletes unknown "MCP: " app passwords).
+        self._locks: dict[str, anyio.Lock] = {}
         self._aliases: dict[str, tuple[float, list[str]]] = {}
+        self._logs: tuple[float, list[dict[str, Any]]] | None = None
         self.provision_limit = RateLimiter(PROVISIONS_PER_MAILBOX_HOUR, 3600, clock=clock)
         self.operation_limit = RateLimiter(120, 60, clock=clock)
 
@@ -158,6 +174,12 @@ class Broker:
 
     def now(self) -> int:
         return int(self._clock())
+
+    def _lock(self, mailbox: str) -> anyio.Lock:
+        lock = self._locks.get(mailbox)
+        if lock is None:
+            lock = self._locks[mailbox] = anyio.Lock()
+        return lock
 
     def mailbox_of(self, token: Any, operation: str) -> Capability:
         try:
@@ -209,18 +231,26 @@ class Broker:
         today = datetime.fromtimestamp(self._clock(), UTC).strftime("%Y-%m-%d")
         name = app_password_name(client_name, today, secrets.token_hex(2))
         password = generate_password(await self.api.password_policy())
-        async with self._lock:
-            await self.api.add_app_password(mailbox, name, password)
-            matches = [
-                p["id"] for p in await self.api.app_passwords(mailbox) if p.get("name") == name
-            ]
-            if not matches:
-                raise BrokerError(502, "mailcow_error", "the new app password could not be found")
-            app_password_id = max(matches)
-            self.db.execute(
-                "INSERT INTO app_passwords (app_password_id, mailbox, name, created_at) VALUES (?, ?, ?, ?)",
-                (app_password_id, mailbox, name, self.now()),
-            )
+        async with self._lock(mailbox):
+            try:
+                await self.api.add_app_password(mailbox, name, password)
+                matches = [
+                    p["id"] for p in await self.api.app_passwords(mailbox) if p.get("name") == name
+                ]
+                if not matches:
+                    raise BrokerError(
+                        502, "mailcow_error", "the new app password could not be found"
+                    )
+                app_password_id = max(matches)
+                # REPLACE: mailcow may reuse an id after a database restore.
+                self.db.execute(
+                    "INSERT OR REPLACE INTO app_passwords (app_password_id, mailbox, name, created_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (app_password_id, mailbox, name, self.now()),
+                )
+            except BaseException:
+                await self._remove_by_name(mailbox, name)
+                raise
         self.audit(
             "provision", mailbox=mailbox, client=client_name, app_password_id=app_password_id
         )
@@ -231,72 +261,108 @@ class Broker:
             "capability": self.signer.issue(mailbox, app_password_id, self._clock()),
         }
 
+    async def _remove_by_name(self, mailbox: str, name: str) -> None:
+        """After a failed provision: the app password may exist without a record."""
+        with anyio.CancelScope(shield=True):
+            try:
+                ids = [
+                    p["id"] for p in await self.api.app_passwords(mailbox) if p.get("name") == name
+                ]
+                await self.api.delete_app_passwords(ids)
+            except MailcowError:
+                log.warning("could not remove an unrecorded app password; reconcile will")
+
     async def _delete_app_password(self, mailbox: str, app_password_id: int) -> bool:
-        """Delete it in mailcow if it's still there and ours; returns whether it was there."""
+        """Delete it in mailcow if it's still there and ours; returns whether it was deleted.
+
+        An app password the user renamed (no "MCP: " prefix any more) is theirs now: kept.
+        """
         existing = {p["id"]: p for p in await self.api.app_passwords(mailbox)}
         found = existing.get(app_password_id)
-        if found is not None and str(found.get("name", "")).startswith(NAME_PREFIX):
+        ours = found is not None and str(found.get("name", "")).startswith(NAME_PREFIX)
+        if ours:
             await self.api.delete_app_passwords([app_password_id])
         self.db.execute(
             "UPDATE app_passwords SET deprovisioned_at = ? WHERE app_password_id = ?",
             (self.now(), app_password_id),
         )
-        return found is not None
+        return ours
 
     async def deprovision(self, body: dict[str, Any]) -> dict[str, Any]:
         capability = self.mailbox_of(body.get("capability"), "deprovision")
-        existed = await self._delete_app_password(capability.mailbox, capability.app_password_id)
+        deleted = await self._delete_app_password(capability.mailbox, capability.app_password_id)
         self.audit(
             "deprovision",
             mailbox=capability.mailbox,
             app_password_id=capability.app_password_id,
-            existed=existed,
+            deleted=deleted,
         )
-        return {"deleted": existed}
+        return {"deleted": deleted}
 
     async def reconcile(self, body: dict[str, Any]) -> dict[str, Any]:
         tokens = body.get("capabilities")
-        if not isinstance(tokens, list) or len(tokens) > 100_000:
+        if not isinstance(tokens, list) or len(tokens) > MAX_CAPABILITIES:
             raise BrokerError(400, "invalid_request", "capabilities must be a list")
         live: set[int] = set()
+        invalid = 0
         for token in tokens:
             try:
                 live.add(self.signer.verify(token).app_password_id)
             except InvalidCapability:
-                continue
-        deleted = 0
-        # The app may not have stored a just-provisioned capability yet.
-        grace_until = self.now() - RECONCILE_GRACE_SECONDS
-        async with self._lock:
-            rows = self.db.all(
-                "SELECT app_password_id, mailbox, created_at, deprovisioned_at FROM app_passwords"
+                invalid += 1
+        if invalid * 2 > len(tokens):
+            # The app only holds tokens we issued: this is a changed BROKER_SIGNING_KEY or
+            # a mix-up of data volumes, and going on would delete every app password.
+            self.audit("reconcile", result="invalid_capabilities", invalid=invalid)
+            raise BrokerError(
+                409,
+                "invalid_capabilities",
+                f"{invalid} of {len(tokens)} capabilities don't verify; nothing was deleted "
+                "(was BROKER_SIGNING_KEY changed?)",
             )
-            keep = {
-                r["app_password_id"]
-                for r in rows
-                if r["deprovisioned_at"] is None
-                and (r["app_password_id"] in live or r["created_at"] > grace_until)
-            }
-            stale = [
-                r
-                for r in rows
-                if r["deprovisioned_at"] is None and r["app_password_id"] not in keep
-            ]
-            for row in stale:
-                if await self._delete_app_password(row["mailbox"], row["app_password_id"]):
-                    deleted += 1
-            # "MCP: " app passwords on known mailboxes that we have no live record of.
-            for mailbox in sorted({r["mailbox"] for r in rows}):
-                orphans = [
-                    p["id"]
-                    for p in await self.api.app_passwords(mailbox)
-                    if str(p.get("name", "")).startswith(NAME_PREFIX) and p["id"] not in keep
-                ]
-                if orphans:
-                    await self.api.delete_app_passwords(orphans)
-                    deleted += len(orphans)
-        self.audit("reconcile", live=len(live), deleted=deleted)
+        deleted = 0
+        now = self.now()
+        # The app may not have stored a just-provisioned capability yet.
+        grace_cutoff = now - RECONCILE_GRACE_SECONDS
+        self.db.execute(
+            "DELETE FROM app_passwords WHERE deprovisioned_at < ?",
+            (now - DEPROVISIONED_RETENTION_SECONDS,),
+        )
+        rows = self.db.all("SELECT mailbox FROM app_passwords GROUP BY mailbox ORDER BY mailbox")
+        for mailbox in [r["mailbox"] for r in rows]:
+            # One mailbox at a time, so sign-ins elsewhere don't wait for all of them.
+            async with self._lock(mailbox):
+                deleted += await self._reconcile_mailbox(mailbox, live, grace_cutoff)
+        self.audit("reconcile", live=len(live), invalid=invalid, deleted=deleted)
         return {"deleted": deleted}
+
+    async def _reconcile_mailbox(self, mailbox: str, live: set[int], grace_cutoff: int) -> int:
+        rows = self.db.all(
+            "SELECT app_password_id, created_at FROM app_passwords"
+            " WHERE mailbox = ? AND deprovisioned_at IS NULL",
+            (mailbox,),
+        )
+        keep = {
+            r["app_password_id"]
+            for r in rows
+            if r["app_password_id"] in live or r["created_at"] > grace_cutoff
+        }
+        deleted = 0
+        for row in rows:
+            if row["app_password_id"] not in keep and await self._delete_app_password(
+                mailbox, row["app_password_id"]
+            ):
+                deleted += 1
+        # "MCP: " app passwords that we have no live record of.
+        orphans = [
+            p["id"]
+            for p in await self.api.app_passwords(mailbox)
+            if str(p.get("name", "")).startswith(NAME_PREFIX) and p["id"] not in keep
+        ]
+        if orphans:
+            await self.api.delete_app_passwords(orphans)
+            deleted += len(orphans)
+        return deleted
 
     async def aliases(self, body: dict[str, Any]) -> dict[str, Any]:
         capability = self.mailbox_of(body.get("capability"), "aliases")
@@ -342,7 +408,7 @@ class Broker:
         items = [
             self._quarantine_view(i)
             for i in await self.api.quarantine()
-            if str(i.get("rcpt", "")).lower() in owned and "id" in i
+            if str(i.get("rcpt", "")).lower() in owned and str(i.get("id", "")).isdigit()
         ]
         items.sort(key=lambda i: i["created"] or "", reverse=True)
         self.audit("quarantine_list", mailbox=capability.mailbox, count=len(items))
@@ -362,13 +428,19 @@ class Broker:
         self.audit("quarantine_delete", mailbox=capability.mailbox, id=int(item["id"]))
         return {"deleted": int(item["id"])}
 
+    async def _postfix_logs(self) -> list[dict[str, Any]]:
+        """The recent Postfix log, shared by all mailboxes for a few seconds."""
+        if self._logs is None or self._logs[0] <= self._clock():
+            self._logs = (self._clock() + LOG_CACHE_SECONDS, await self.api.postfix_logs(LOG_LINES))
+        return self._logs[1]
+
     async def delivery_status(self, body: dict[str, Any]) -> dict[str, Any]:
         capability = self.mailbox_of(body.get("capability"), "delivery_status")
         message_id = body.get("message_id")
         if not isinstance(message_id, str) or not _MESSAGE_ID.match(message_id):
             raise BrokerError(400, "invalid_request", "message_id must look like <id@domain>")
         owned = await self.owned_addresses(capability.mailbox)
-        recipients = parse_delivery(await self.api.postfix_logs(LOG_LINES), message_id, owned)
+        recipients = parse_delivery(await self._postfix_logs(), message_id, owned)
         self.audit("delivery_status", mailbox=capability.mailbox, count=len(recipients))
         return {"message_id": message_id, "recipients": recipients}
 
@@ -417,11 +489,14 @@ def create_broker_app(
         handler = operations.get(request.path_params["name"])
         if handler is None:
             return JSONResponse({"error": "unknown_operation"}, status_code=404)
-        body_bytes = await request.body()
-        if len(body_bytes) > MAX_BODY_BYTES:
-            return JSONResponse({"error": "too_large"}, status_code=413)
+        limit = MAX_RECONCILE_BYTES if handler == broker.reconcile else MAX_BODY_BYTES
+        body_bytes = bytearray()
+        async for chunk in request.stream():
+            body_bytes += chunk
+            if len(body_bytes) > limit:
+                return JSONResponse({"error": "too_large"}, status_code=413)
         try:
-            body = await request.json() if body_bytes else {}
+            body = json.loads(body_bytes) if body_bytes else {}
         except ValueError:
             return JSONResponse(
                 {"error": "invalid_request", "message": "body must be JSON"}, status_code=400
@@ -440,6 +515,12 @@ def create_broker_app(
             )
         except MailcowError as exc:
             return JSONResponse({"error": "mailcow_error", "message": str(exc)}, status_code=502)
+        except Exception:
+            log.exception("broker operation %s failed", request.path_params["name"])
+            return JSONResponse(
+                {"error": "internal_error", "message": "the broker failed unexpectedly"},
+                status_code=500,
+            )
 
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "role": "broker", "version": __version__})

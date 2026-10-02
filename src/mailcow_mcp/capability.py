@@ -65,7 +65,9 @@ class CapabilitySigner:
         if len(parts) != 3 or parts[0] != PREFIX:
             raise InvalidCapability("malformed")
         _, payload, signature = parts
-        if not hmac.compare_digest(signature, self._signature(payload)):
+        if not signature.isascii() or not hmac.compare_digest(
+            signature.encode(), self._signature(payload).encode()
+        ):
             raise InvalidCapability("bad signature")
         try:
             data = json.loads(_unb64(payload))

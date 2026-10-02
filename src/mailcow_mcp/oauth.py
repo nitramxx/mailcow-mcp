@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from cryptography.fernet import InvalidToken
 from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
@@ -36,6 +38,8 @@ from pydantic import AnyUrl
 from mailcow_mcp.audit import AuditLog
 from mailcow_mcp.crypto import Box, hash_secret, new_secret
 from mailcow_mcp.db import Database
+
+log = logging.getLogger(__name__)
 
 ACCESS_TOKEN_TTL = 3600
 REFRESH_TOKEN_TTL = 30 * 86400  # sliding: each rotation starts a new period
@@ -560,25 +564,51 @@ class Provider(
         row = self.db.one("SELECT capability_enc FROM grants WHERE id = ?", (grant_id,))
         return self.box.decrypt(row["capability_enc"]) if row and row["capability_enc"] else None
 
+    def _decrypt_or_none(self, ciphertext: str) -> str | None:
+        try:
+            return self.box.decrypt(ciphertext)
+        except InvalidToken:
+            return None
+
     def live_capabilities(self) -> list[str]:
+        """Capabilities of active grants (unreadable ones, e.g. after an ENC_KEY change, are
+        left out: those grants can't be used anyway)."""
         rows = self.db.all("SELECT capability_enc FROM grants WHERE capability_enc IS NOT NULL")
-        return [self.box.decrypt(r["capability_enc"]) for r in rows]
+        found = [self._decrypt_or_none(r["capability_enc"]) for r in rows]
+        if None in found:
+            log.warning(
+                "%d stored capabilities can't be decrypted (ENC_KEY changed?)", found.count(None)
+            )
+        return [c for c in found if c is not None]
 
     def pending_deprovisions(self, limit: int = 50) -> list[tuple[int, str, str]]:
+        """The queue, items that failed least often first (so failing ones don't block)."""
         rows = self.db.all(
-            "SELECT id, mailbox, capability_enc FROM deprovision_queue ORDER BY id LIMIT ?",
+            "SELECT id, mailbox, capability_enc FROM deprovision_queue"
+            " ORDER BY attempts, id LIMIT ?",
             (limit,),
         )
-        return [(r["id"], r["mailbox"], self.box.decrypt(r["capability_enc"])) for r in rows]
+        result = []
+        for row in rows:
+            capability = self._decrypt_or_none(row["capability_enc"])
+            if capability is None:
+                log.warning("dropping an unreadable deprovisioning item; reconcile will clean up")
+                self.mark_deprovisioned(row["id"])
+            else:
+                result.append((row["id"], row["mailbox"], capability))
+        return result
 
-    def deprovisioned(self, queue_id: int) -> None:
+    def mark_deprovisioned(self, queue_id: int) -> None:
         self.db.execute("DELETE FROM deprovision_queue WHERE id = ?", (queue_id,))
 
-    def deprovision_failed(self, queue_id: int, error: str) -> None:
+    def deprovision_failed(self, queue_id: int, error: str) -> int:
+        """Record a failed attempt; returns the number of attempts so far."""
         self.db.execute(
             "UPDATE deprovision_queue SET attempts = attempts + 1, last_error = ? WHERE id = ?",
             (error[:500], queue_id),
         )
+        row = self.db.one("SELECT attempts FROM deprovision_queue WHERE id = ?", (queue_id,))
+        return int(row["attempts"]) if row else 0
 
     def purge_expired(self) -> dict[str, int]:
         """Delete expired data. Grants with no live code or token end here."""

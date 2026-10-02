@@ -47,6 +47,7 @@ MCP_PATH = "/mcp"
 PURGE_INTERVAL_SECONDS = 300
 DEPROVISION_INTERVAL_SECONDS = 60
 RECONCILE_INTERVAL_SECONDS = 3600
+RECONCILE_RETRY_SECONDS = 600
 REGISTRATIONS_PER_IP_HOUR = 20
 MAX_REGISTRATION_BYTES = 64 * 1024
 
@@ -385,18 +386,22 @@ def create_app(
                 log.exception("purging expired data failed")
             await anyio.sleep(PURGE_INTERVAL_SECONDS)
 
-    async def manage_app_passwords(broker: BrokerClient) -> None:
-        last_reconcile = 0.0
+    async def manage_app_passwords(client: BrokerClient) -> None:
+        next_reconcile = time.monotonic()  # once at startup, then hourly
         while True:
             try:
-                if done := await drain_deprovision_queue(provider, broker):
+                if done := await drain_deprovision_queue(provider, client):
                     log.info("deleted %d app password(s) of ended connections", done)
-                if time.monotonic() - last_reconcile >= RECONCILE_INTERVAL_SECONDS:
-                    if deleted := await reconcile(provider, broker):
-                        log.info("reconcile deleted %d unused app password(s)", deleted)
-                    last_reconcile = time.monotonic()
             except Exception:
-                log.exception("managing app passwords failed")
+                log.exception("deleting app passwords of ended connections failed")
+            if time.monotonic() >= next_reconcile:
+                try:
+                    if deleted := await reconcile(provider, client):
+                        log.info("reconcile deleted %d unused app password(s)", deleted)
+                    next_reconcile = time.monotonic() + RECONCILE_INTERVAL_SECONDS
+                except Exception:
+                    log.exception("reconciling app passwords failed")
+                    next_reconcile = time.monotonic() + RECONCILE_RETRY_SECONDS
             await anyio.sleep(DEPROVISION_INTERVAL_SECONDS)
 
     @asynccontextmanager

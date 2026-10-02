@@ -108,6 +108,32 @@ class TestHelpers:
         assert result[1]["response"] == "host said: 550 5.1.1 User unknown"
         assert parse_delivery(logs, "<other@x>", {"alice@example.test"}) == []
 
+    def test_parse_delivery_details(self) -> None:
+        mid = "<m1@example.test>"
+        # mailcow lists the newest first; two lines in the same second keep their order.
+        logs = [
+            {
+                "time": "200",
+                "message": "QID001: to=<bob@local.test>, orig_to=<team@local.test>,"
+                " relay=local, dsn=2.0.0, status=sent (delivered (via dovecot))",
+            },
+            {
+                "time": "200",
+                "message": "QID001: to=<bob@local.test>, orig_to=<team@local.test>,"
+                " relay=local, dsn=4.2.0, status=deferred (busy)",
+            },
+            {
+                "time": "100",
+                "message": "NOQUEUE: reject: RCPT from x: 554; from=<alice@example.test>",
+            },
+            {"time": "100", "message": "QID001: from=<alice@example.test>, size=1"},
+            {"time": "100", "message": f"QID001: message-id={mid}"},
+        ]
+        (result,) = parse_delivery(logs, mid, {"alice@example.test"})
+        assert result["recipient"] == "team@local.test"  # not the alias's members
+        assert result["status"] == "sent"
+        assert result["response"] == "delivered (via dovecot)"
+
 
 class TestTransport:
     async def test_shared_secret_required(self, broker: BrokerSetup) -> None:
@@ -233,6 +259,55 @@ class TestReconcile:
         remaining = {p["id"] for p in mailcow.passwords_of("alice@example.test")}
         assert remaining == {keep["app_password_id"], recent["app_password_id"], user_own}
         assert orphan not in remaining
+
+    async def test_refuses_capabilities_it_cant_verify(
+        self, broker: BrokerSetup, mailcow: MockMailcow
+    ) -> None:
+        # E.g. BROKER_SIGNING_KEY changed: deleting "unknown" app passwords would delete all.
+        result = await provision(broker, mailcow)
+        broker.broker.db.execute(
+            "UPDATE app_passwords SET created_at = created_at - ?", (RECONCILE_GRACE_SECONDS + 1,)
+        )
+        other = CapabilitySigner(generate_key())
+        forged = other.issue("alice@example.test", result["app_password_id"])
+        response = await broker.call("reconcile", capabilities=[forged])
+        assert response.status_code == 409
+        assert response.json()["error"] == "invalid_capabilities"
+        assert len(mailcow.passwords_of("alice@example.test")) == 1
+
+    async def test_many_capabilities(self, broker: BrokerSetup, mailcow: MockMailcow) -> None:
+        # Far more than the 64 KB other operations may send.
+        result = await provision(broker, mailcow)
+        signer = broker.broker.signer
+        tokens = [signer.issue("someone@example.test", 10_000 + i) for i in range(2000)]
+        response = await broker.call("reconcile", capabilities=[result["capability"], *tokens])
+        assert response.status_code == 200, response.text
+        assert len(mailcow.passwords_of("alice@example.test")) == 1
+
+    async def test_forgets_old_deleted_app_passwords(
+        self, broker: BrokerSetup, mailcow: MockMailcow
+    ) -> None:
+        result = await provision(broker, mailcow)
+        await broker.call("deprovision", capability=result["capability"])
+        broker.broker.db.execute("UPDATE app_passwords SET deprovisioned_at = 1")
+        await broker.call("reconcile", capabilities=[])
+        assert broker.broker.db.one("SELECT count(*) AS n FROM app_passwords")["n"] == 0  # type: ignore[index]
+
+
+class TestProvisionFailure:
+    async def test_unrecorded_app_password_is_removed(
+        self, broker: BrokerSetup, mailcow: MockMailcow, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail(*args: object) -> None:
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(broker.broker.db, "execute", fail)
+        response = await broker.call(
+            "provision", mailcow_oauth_token=token_for(mailcow, "alice@example.test")
+        )
+        assert response.status_code == 500
+        assert response.json()["error"] == "internal_error"
+        assert mailcow.passwords_of("alice@example.test") == []
 
 
 class TestMailboxScopedOperations:
